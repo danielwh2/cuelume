@@ -19,13 +19,15 @@ const SOURCE_STOP_PADDING = 0.05;
 const CLEANUP_MARGIN = 0.05;
 const INAUDIBLE_GAIN = 0.001;
 const OUTPUT_GAIN = 4;
+const PLAYBACK_LEAD_SECONDS = 0.01;
+const PRIMER_DURATION_SECONDS = 0.02;
 
 function renderTone(
   context: AudioContext,
   destination: AudioNode,
   layer: ToneLayer,
   startTime: number,
-): void {
+): OscillatorNode {
   const oscillator = context.createOscillator();
   oscillator.type = layer.waveform;
   oscillator.frequency.setValueAtTime(layer.frequency, startTime);
@@ -44,6 +46,7 @@ function renderTone(
   oscillator.connect(gain).connect(destination);
   oscillator.start(startTime);
   oscillator.stop(startTime + layer.attack + layer.decay + SOURCE_STOP_PADDING);
+  return oscillator;
 }
 
 function renderNoise(
@@ -51,7 +54,7 @@ function renderNoise(
   destination: AudioNode,
   layer: NoiseLayer,
   startTime: number,
-): void {
+): AudioBufferSourceNode {
   const duration = layer.attack + layer.decay + SOURCE_STOP_PADDING;
   const length = Math.max(1, Math.floor(duration * context.sampleRate));
   const buffer = context.createBuffer(1, length, context.sampleRate);
@@ -73,7 +76,7 @@ function renderNoise(
 
   source.connect(filter).connect(gain).connect(destination);
   source.start(startTime);
-  source.stop(startTime + duration);
+  return source;
 }
 
 /** Wires a soft echo/shimmer send off `source`, feeding back into `destination`. */
@@ -106,14 +109,6 @@ function attachShimmer(
   return [delay, feedbackFilter, feedbackGain, wetGain];
 }
 
-function sourceEnd(recipe: SoundRecipe): number {
-  return Math.max(
-    ...recipe.layers.map(
-      (layer) => (layer.offset ?? 0) + layer.attack + layer.decay + SOURCE_STOP_PADDING,
-    ),
-  );
-}
-
 function shimmerTail(shimmer?: Shimmer): number {
   if (!shimmer || shimmer.feedback <= 0) return 0;
   if (shimmer.feedback >= 1) return shimmer.delay;
@@ -142,7 +137,6 @@ function getOutput(context: AudioContext): GainNode {
 }
 
 function renderRecipe(context: AudioContext, recipe: SoundRecipe, volume: number): void {
-  const now = context.currentTime;
   const output = getOutput(context);
   const master = context.createGain();
   master.gain.value = recipe.masterGain * volume;
@@ -151,23 +145,71 @@ function renderRecipe(context: AudioContext, recipe: SoundRecipe, volume: number
   const shimmerNodes = recipe.shimmer
     ? attachShimmer(context, master, output, recipe.shimmer)
     : [];
+  const recipeStartTime = context.currentTime + PLAYBACK_LEAD_SECONDS;
+  const sources: AudioScheduledSourceNode[] = [];
 
   for (const layer of recipe.layers) {
-    const startTime = now + (layer.offset ?? 0);
-    if (layer.kind === "tone") renderTone(context, master, layer, startTime);
-    else renderNoise(context, master, layer, startTime);
+    const startTime = recipeStartTime + (layer.offset ?? 0);
+    if (layer.kind === "tone") sources.push(renderTone(context, master, layer, startTime));
+    else sources.push(renderNoise(context, master, layer, startTime));
   }
 
-  const cleanupAfterMs = (sourceEnd(recipe) + shimmerTail(recipe.shimmer) + CLEANUP_MARGIN) * 1000;
-  setTimeout(() => {
-    master.disconnect();
-    for (const node of shimmerNodes) node.disconnect();
-  }, cleanupAfterMs);
+  let remainingSources = sources.length;
+  for (const source of sources) {
+    source.onended = () => {
+      remainingSources--;
+      if (remainingSources > 0) return;
+
+      // Anchor cleanup to rendered source completion so a cold output path
+      // cannot be disconnected by a wall timer before playback begins.
+      const cleanupAfterMs = (shimmerTail(recipe.shimmer) + CLEANUP_MARGIN) * 1000;
+      setTimeout(() => {
+        master.disconnect();
+        for (const node of shimmerNodes) node.disconnect();
+      }, cleanupAfterMs);
+    };
+  }
 }
 
 let sharedContext: AudioContext | null = null;
 let enabled = true;
 let globalVolume = 1;
+let rendererReady = false;
+let rendererPriming = false;
+let pendingPlayback: Array<{
+  context: AudioContext;
+  recipe: SoundRecipe;
+  volume: number;
+}> = [];
+
+function renderAfterPriming(context: AudioContext, recipe: SoundRecipe, volume: number): void {
+  if (rendererReady) {
+    renderRecipe(context, recipe, volume);
+    return;
+  }
+
+  pendingPlayback.push({ context, recipe, volume });
+  if (rendererPriming) return;
+  rendererPriming = true;
+
+  // A new context can report `running` before its output renderer consumes
+  // source commands. This silent buffer's ended event proves rendering began.
+  const primer = context.createBufferSource();
+  const primerLength = Math.max(1, Math.ceil(context.sampleRate * PRIMER_DURATION_SECONDS));
+  primer.buffer = context.createBuffer(1, primerLength, context.sampleRate);
+  primer.connect(getOutput(context));
+  primer.onended = () => {
+    rendererReady = true;
+    rendererPriming = false;
+    const queuedPlayback = pendingPlayback;
+    pendingPlayback = [];
+    if (!enabled) return;
+    for (const queued of queuedPlayback) {
+      renderRecipe(queued.context, queued.recipe, queued.volume);
+    }
+  };
+  primer.start();
+}
 
 function normalizeVolume(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value)
@@ -218,12 +260,14 @@ export function play(sound: SoundName = "chime", options?: { volume?: number }):
 
   const recipe = RECIPES[sound];
   if (context.state === "running") {
-    renderRecipe(context, recipe, playVolume);
+    renderAfterPriming(context, recipe, playVolume);
   } else {
     try {
       void context.resume().then(
         () => {
-          if (enabled && context.state === "running") renderRecipe(context, recipe, playVolume);
+          if (enabled && context.state === "running") {
+            renderAfterPriming(context, recipe, playVolume);
+          }
         },
         () => {},
       );
