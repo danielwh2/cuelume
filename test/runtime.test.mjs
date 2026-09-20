@@ -437,3 +437,422 @@ test("finished shimmer graphs disconnect after their audible tail", async (conte
   play("chime");
   assert.equal(timers.length, 2);
 });
+
+function fakeWindow(AudioContext) {
+  const listeners = new Map();
+  return {
+    ...(AudioContext ? { AudioContext } : {}),
+    listeners,
+    addEventListener(type, listener, options) {
+      const entries = listeners.get(type) ?? [];
+      entries.push({ listener, options });
+      listeners.set(type, entries);
+    },
+    removeEventListener(type, listener) {
+      const entries = (listeners.get(type) ?? []).filter((entry) => entry.listener !== listener);
+      if (entries.length) listeners.set(type, entries);
+      else listeners.delete(type);
+    },
+    emit(type) {
+      for (const { listener } of listeners.get(type) ?? []) listener({ type });
+    },
+  };
+}
+
+/** A context that renders into stubs; `resume()` is supplied by the test.
+ * `renders()` counts recipes: one master gain per recipe hangs off the
+ * shared output bus and takes the layers' gains (a shimmer's wet gain hangs
+ * off the bus too, but is fed by a filter). */
+function renderingContext(resume) {
+  const gains = [];
+
+  class AudioNodeStub {
+    constructor() {
+      this.connections = [];
+    }
+    connect(destination) {
+      this.connections.push(destination);
+      return destination;
+    }
+    disconnect() {}
+  }
+
+  class RenderingContext {
+    static instance = null;
+    state = "suspended";
+    currentTime = 0;
+    sampleRate = 1;
+    destination = new AudioNodeStub();
+    stateListeners = [];
+    constructor() {
+      RenderingContext.instance = this;
+    }
+    addEventListener(type, listener) {
+      if (type === "statechange") this.stateListeners.push(listener);
+    }
+    removeEventListener(type, listener) {
+      this.stateListeners = this.stateListeners.filter((entry) => entry !== listener);
+    }
+    resume() {
+      return resume(this);
+    }
+    createGain() {
+      const gain = Object.assign(new AudioNodeStub(), { gain: audioParam() });
+      gains.push(gain);
+      return gain;
+    }
+    createDynamicsCompressor() {
+      return compressor(new AudioNodeStub());
+    }
+    createOscillator() {
+      return Object.assign(new AudioNodeStub(), {
+        frequency: audioParam(),
+        detune: audioParam(),
+        start() {},
+        stop() {},
+      });
+    }
+    createBuffer() {
+      return { getChannelData: () => new Float32Array(1) };
+    }
+    createBufferSource() {
+      return Object.assign(new AudioNodeStub(), { buffer: null, start() {}, stop() {} });
+    }
+    createBiquadFilter() {
+      return Object.assign(new AudioNodeStub(), { frequency: audioParam(), Q: audioParam() });
+    }
+    createDelay() {
+      return Object.assign(new AudioNodeStub(), { delayTime: audioParam() });
+    }
+  }
+
+  const renders = () =>
+    gains.filter(
+      (gain, index) =>
+        index > 0 &&
+        gain.connections.includes(gains[0]) &&
+        gains.some((layer) => layer.connections.includes(gain)),
+    ).length;
+
+  return { RenderingContext, renders };
+}
+
+test("a resume left pending is retried on the next gesture the browser honours", async (context) => {
+  context.after(restoreGlobals);
+  const resumes = [];
+  const { RenderingContext: GestureGatedContext, renders } = renderingContext(
+    () =>
+      new Promise((resolve) => {
+        resumes.push(resolve);
+      }),
+  );
+
+  const win = fakeWindow(GestureGatedContext);
+  setGlobal("setTimeout", () => 0);
+  setGlobal("navigator", { userActivation: { hasBeenActive: true } });
+  setGlobal("window", win);
+  const { play } = await import(`../dist/audio/engine.js?unlock=${Date.now()}`);
+
+  // Two cues off a pointer event or a frame callback: both resumes stay pending.
+  play("chime");
+  play("press");
+  assert.equal(resumes.length, 2);
+  assert.equal(renders(), 0);
+  assert.deepEqual([...win.listeners.keys()].sort(), ["click", "keydown", "mousedown", "touchend"]);
+  for (const entries of win.listeners.values()) {
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].options.capture, true);
+    assert.equal(entries[0].options.passive, true);
+  }
+
+  // The next honoured gesture retries; the browser now starts the context and
+  // settles every earlier promise, so the queued cues render once each.
+  win.emit("touchend");
+  assert.equal(resumes.length, 3);
+  const ctx = GestureGatedContext.instance;
+  ctx.state = "running";
+  for (const listener of ctx.stateListeners) listener();
+  for (const resolve of resumes) resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(renders(), 2);
+  assert.equal(win.listeners.size, 0);
+  assert.equal(ctx.stateListeners.length, 0);
+
+  // Running now: a further play renders directly and arms nothing.
+  play("chime");
+  assert.equal(renders(), 3);
+  assert.equal(win.listeners.size, 0);
+});
+
+test("prime creates and resumes the shared context without playing, behind the same gates", async (context) => {
+  context.after(restoreGlobals);
+  let constructions = 0;
+  let resumes = 0;
+  let renders = 0;
+
+  class PrimableContext {
+    state = "suspended";
+    destination = {};
+    constructor() {
+      constructions++;
+    }
+    resume() {
+      resumes++;
+      this.state = "running";
+      return Promise.resolve();
+    }
+    createGain() {
+      renders++;
+    }
+  }
+
+  const userActivation = { hasBeenActive: false };
+  const win = fakeWindow(PrimableContext);
+  setGlobal("navigator", { userActivation });
+  setGlobal("window", win);
+  const { prime, setEnabled } = await import(`../dist/audio/engine.js?prime=${Date.now()}`);
+
+  prime();
+  assert.equal(constructions, 0);
+  assert.equal(win.listeners.size, 4);
+
+  userActivation.hasBeenActive = true;
+  setEnabled(false);
+  prime();
+  assert.equal(constructions, 0);
+
+  setEnabled(true);
+  prime();
+  assert.equal(constructions, 1);
+  assert.equal(resumes, 1);
+  assert.equal(renders, 0);
+
+  prime();
+  assert.equal(constructions, 1);
+  assert.equal(resumes, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(win.listeners.size, 0);
+});
+
+test("a window without listeners and a resume that throws leave play silent", async (context) => {
+  context.after(restoreGlobals);
+
+  class ThrowingResumeContext {
+    state = "suspended";
+    resume() {
+      throw new Error("blocked");
+    }
+  }
+
+  setGlobal("navigator", { userActivation: { hasBeenActive: true } });
+  setGlobal("window", { AudioContext: ThrowingResumeContext });
+  const { play, prime } = await import(`../dist/audio/engine.js?bare=${Date.now()}`);
+  assert.doesNotThrow(() => play("chime"));
+  assert.doesNotThrow(() => prime());
+});
+
+test("a cue whose resume settles long after it was asked for is dropped", async (context) => {
+  context.after(restoreGlobals);
+  const resumes = [];
+  let now = 10_000;
+  const { RenderingContext: SlowStartContext, renders } = renderingContext(
+    (ctx) =>
+      new Promise((resolve) => {
+        resumes.push(() => {
+          ctx.state = "running";
+          resolve();
+        });
+      }),
+  );
+
+  setGlobal("setTimeout", () => 0);
+  setGlobal("performance", { now: () => now });
+  setGlobal("navigator", { userActivation: { hasBeenActive: true } });
+  setGlobal("window", fakeWindow(SlowStartContext));
+  const { play } = await import(`../dist/audio/engine.js?stale=${Date.now()}`);
+
+  // Asked for long before the context starts: stale, dropped.
+  play("chime");
+  now += 1_001;
+  // Asked for just before the start: plays.
+  play("press");
+  now += 999;
+  for (const resolve of resumes) resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(renders(), 1);
+});
+
+test("a play blocked before activation starts the context on the first tap that counts", async (context) => {
+  context.after(restoreGlobals);
+  let constructions = 0;
+  let resumes = 0;
+  const userActivation = { hasBeenActive: false };
+
+  class LateStartContext {
+    state = "suspended";
+    constructor() {
+      constructions++;
+    }
+    resume() {
+      resumes++;
+      this.state = "running";
+      return Promise.resolve();
+    }
+    createGain() {
+      throw new Error("nothing should render");
+    }
+  }
+
+  const win = fakeWindow(LateStartContext);
+  setGlobal("navigator", { userActivation });
+  setGlobal("window", win);
+  const { play } = await import(`../dist/audio/engine.js?blocked=${Date.now()}`);
+
+  // A swipe's cue: no activation yet, so no context — but the engine now waits.
+  play("page");
+  assert.equal(constructions, 0);
+  assert.deepEqual([...win.listeners.keys()].sort(), ["click", "keydown", "mousedown", "touchend"]);
+
+  // The swipe's own touchend grants nothing on iOS: keep waiting.
+  win.emit("touchend");
+  assert.equal(constructions, 0);
+  assert.equal(win.listeners.size, 4);
+
+  // A tap anywhere does, even one that plays no cue of its own.
+  userActivation.hasBeenActive = true;
+  win.emit("touchend");
+  assert.equal(constructions, 1);
+  assert.equal(resumes, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(win.listeners.size, 0);
+
+  // The dropped cue stays dropped; the next one renders straight away.
+  win.emit("click");
+  assert.equal(constructions, 1);
+  assert.equal(resumes, 1);
+});
+
+test("an armed unlock waits out a disabled stretch and a context born running", async (context) => {
+  context.after(restoreGlobals);
+  let constructions = 0;
+  let resumes = 0;
+  const userActivation = { hasBeenActive: false };
+
+  class RunningContext {
+    state = "running";
+    constructor() {
+      constructions++;
+    }
+    resume() {
+      resumes++;
+      return Promise.resolve();
+    }
+  }
+
+  const win = fakeWindow(RunningContext);
+  setGlobal("navigator", { userActivation });
+  setGlobal("window", win);
+  const { play, setEnabled } = await import(`../dist/audio/engine.js?disabled=${Date.now()}`);
+
+  play("chime");
+  assert.equal(win.listeners.size, 4);
+
+  // Sound switched off while armed: a tap creates nothing, listeners stay.
+  userActivation.hasBeenActive = true;
+  setEnabled(false);
+  win.emit("click");
+  assert.equal(constructions, 0);
+  assert.equal(win.listeners.size, 4);
+
+  // Switched on again: the next tap creates the context; born running,
+  // it needs no resume and the unlock stands down at once.
+  setEnabled(true);
+  win.emit("keydown");
+  assert.equal(constructions, 1);
+  assert.equal(resumes, 0);
+  assert.equal(win.listeners.size, 0);
+});
+
+test("a window that cannot remove listeners is never armed", async (context) => {
+  context.after(restoreGlobals);
+  let added = 0;
+
+  class SuspendedContext {
+    state = "suspended";
+    resume() {
+      return new Promise(() => {});
+    }
+  }
+
+  setGlobal("navigator", { userActivation: { hasBeenActive: false } });
+  setGlobal("window", {
+    AudioContext: SuspendedContext,
+    addEventListener() {
+      added++;
+    },
+  });
+  const { play, prime } = await import(`../dist/audio/engine.js?noremove=${Date.now()}`);
+  assert.doesNotThrow(() => play("chime"));
+  assert.doesNotThrow(() => prime());
+  assert.equal(added, 0);
+});
+
+test("without Web Audio a blocked play arms nothing", async (context) => {
+  context.after(restoreGlobals);
+  const win = fakeWindow(undefined);
+  setGlobal("navigator", { userActivation: { hasBeenActive: false } });
+  setGlobal("window", win);
+  const { play, prime } = await import(`../dist/audio/engine.js?noaudio=${Date.now()}`);
+  play("chime");
+  prime();
+  assert.equal(win.listeners.size, 0);
+});
+
+test("the unlock survives a refused resume and lands on a later mousedown", async (context) => {
+  context.after(restoreGlobals);
+  let attempts = 0;
+  const { RenderingContext: ReluctantContext, renders } = renderingContext((ctx) => {
+    attempts++;
+    if (attempts < 3) return Promise.reject(new Error("not yet"));
+    ctx.state = "running";
+    return Promise.resolve();
+  });
+
+  const win = fakeWindow(ReluctantContext);
+  setGlobal("setTimeout", () => 0);
+  setGlobal("navigator", { userActivation: { hasBeenActive: true } });
+  setGlobal("window", win);
+  const { play, prime } = await import(`../dist/audio/engine.js?refused=${Date.now()}`);
+
+  // A prime() off the gesture stack: refused, armed.
+  prime();
+  assert.equal(attempts, 1);
+  assert.equal(win.listeners.size, 4);
+
+  // A gesture the browser still refuses keeps the arm up.
+  win.emit("touchend");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 2);
+  assert.equal(win.listeners.size, 4);
+
+  // The next mousedown lands; nothing was queued, so nothing renders.
+  win.emit("mousedown");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 3);
+  assert.equal(win.listeners.size, 0);
+  assert.equal(renders(), 0);
+
+  // A second cycle: the context gets suspended again, a cue re-arms once,
+  // and the next gesture tears it all down again, context listener included.
+  const ctx = ReluctantContext.instance;
+  ctx.state = "suspended";
+  play("chime");
+  play("press");
+  assert.equal(win.listeners.size, 4);
+  assert.equal(ctx.stateListeners.length, 1);
+  win.emit("keydown");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(win.listeners.size, 0);
+  assert.equal(ctx.stateListeners.length, 0);
+  assert.equal(renders(), 2);
+});

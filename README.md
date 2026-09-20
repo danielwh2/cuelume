@@ -91,10 +91,11 @@ Cuelume starts enabled at full volume and does not read or write storage.
 ## API
 
 ```ts
-import { play, bind, setEnabled, setVolume, sounds, type SoundName } from "cuelume";
+import { play, prime, bind, setEnabled, setVolume, sounds, type SoundName } from "cuelume";
 ```
 
 - **`play(name?: SoundName, options?: { volume?: number })`** — play a sound immediately. Defaults to `"chime"`; `options.volume` controls this play only.
+- **`prime()`** — create and start the shared `AudioContext` without playing anything. Call it from a `click`, `touchend`, `keydown` or `mousedown` handler when the first cue of a visit will come from somewhere the browser does not treat as a gesture (a swipe, a drag library's pointer callbacks, a frame callback, the continuation after an `await`). Same gates as `play()`: a no-op while disabled and without Web Audio; before the first user activation it waits for the next gesture that counts.
 - **`bind(root?: ParentNode)`** — delegate all `data-cuelume-*` interactions under `root` (defaults to the whole document). Idempotent and handles elements added later.
 - **`setEnabled(enabled: boolean)`** — enable or disable future playback. Does not persist the preference or stop sounds already playing.
 - **`setVolume(volume: number)`** — set the global volume for future playback, clamped to `0–1`. Non-finite values are ignored and preferences are not persisted.
@@ -108,6 +109,7 @@ import { play, bind, setEnabled, setVolume, sounds, type SoundName } from "cuelu
 - **Audible without clipping.** One shared boosted output stage keeps sounds clear, with native compression protecting overlapping cues.
 - **One lazy `AudioContext`.** Shared across all sounds, created on first use.
 - **Autoplay-friendly.** Attempts to resume suspended audio without surfacing errors when a browser blocks it.
+- **Starts on the next real gesture.** WebKit grants a page user activation only for a touch that ends as a tap, never for a swipe, and starts audio only from the call stack of a `touchend`, `click` or `keydown`. A first cue played from a swipe, a drag library's `pointerup`, a frame callback or the continuation after an `await` is therefore blocked. Cuelume then listens once, in the capture phase on `window`, for the next `touchend`, `click`, `keydown` or `mousedown` that counts, and creates and starts the context there, so every cue after it plays. A cue blocked before the page's first activation is dropped; one left waiting on a pending `resume()` plays if that gesture comes within a second, else it is dropped rather than burst out late. Nothing is left listening once the context runs. `prime()` lets an app start the context from a gesture of its own choosing.
 - **SSR-safe.** Importing on the server is a no-op.
 - **Safe fallback.** Invalid runtime names and unavailable or blocked Web Audio make `play()` a silent no-op.
 - **Dynamic, idempotent binding.** `bind()` never double-attaches listeners, and later DOM additions, removals, and clones work automatically.
