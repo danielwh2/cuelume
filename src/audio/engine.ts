@@ -7,12 +7,15 @@
  */
 
 import {
-  RECIPES,
-  isSoundName,
+  THEMES,
+  isThemeName,
+  resolveSoundName,
+  type LegacySoundName,
   type NoiseLayer,
   type SoundLayer,
   type SoundName,
   type SoundRecipe,
+  type ThemeName,
   type ToneLayer,
 } from "../sounds/recipes.js";
 
@@ -50,11 +53,13 @@ function renderTone(
   destination: AudioNode,
   layer: ToneLayer,
   startTime: number,
+  detune: number,
 ): void {
   const oscillator = context.createOscillator();
   oscillator.type = layer.waveform;
   oscillator.frequency.setValueAtTime(layer.frequency, startTime);
-  if (layer.detune) oscillator.detune.value = layer.detune;
+  const totalDetune = (layer.detune ?? 0) + detune;
+  if (totalDetune) oscillator.detune.value = totalDetune;
 
   if (layer.glideTo !== undefined) {
     const glideTime = layer.glideTime ?? layer.attack + layer.decay;
@@ -85,8 +90,12 @@ function renderNoise(
 
   const filter = context.createBiquadFilter();
   filter.type = layer.filterType;
-  filter.frequency.value = layer.filterFrequency;
+  filter.frequency.setValueAtTime(layer.filterFrequency, startTime);
   if (layer.filterQ !== undefined) filter.Q.value = layer.filterQ;
+  if (layer.filterGlideTo !== undefined) {
+    const glideTime = layer.filterGlideTime ?? layer.attack + layer.decay;
+    filter.frequency.exponentialRampToValueAtTime(layer.filterGlideTo, startTime + glideTime);
+  }
 
   const gain = renderEnvelope(context, layer, startTime);
   source.connect(filter).connect(gain);
@@ -165,9 +174,10 @@ function renderRecipe(context: AudioContext, recipe: SoundRecipe, volume: number
     master.connect(send).connect(space);
   }
 
+  const detune = recipe.variation ? (2 * Math.random() - 1) * recipe.variation : 0;
   for (const layer of recipe.layers) {
     const startTime = now + (layer.offset ?? 0);
-    if (layer.kind === "tone") renderTone(context, master, layer, startTime);
+    if (layer.kind === "tone") renderTone(context, master, layer, startTime, detune);
     else renderNoise(context, master, layer, startTime);
   }
 
@@ -182,6 +192,7 @@ function renderRecipe(context: AudioContext, recipe: SoundRecipe, volume: number
 let sharedContext: AudioContext | null = null;
 let enabled = true;
 let globalVolume = 1;
+let theme: ThemeName = "default";
 
 function normalizeVolume(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value)
@@ -197,6 +208,11 @@ export function setEnabled(value: boolean): void {
 /** Sets the volume multiplier for future playback. Preference storage stays with the app. */
 export function setVolume(value: number): void {
   globalVolume = normalizeVolume(value, globalVolume);
+}
+
+/** Switches the theme for future playback. Unknown names are ignored; nothing is persisted. */
+export function setTheme(value: ThemeName): void {
+  if (isThemeName(value)) theme = value;
 }
 
 function getAudioContext(): AudioContext | null {
@@ -215,13 +231,18 @@ function getAudioContext(): AudioContext | null {
 }
 
 /**
- * Plays a sound immediately. Safe to call from anywhere — lazily creates
+ * Plays a cue immediately, in the active theme. Legacy pre-0.3 names are
+ * accepted and mapped to their canonical cue. Safe to call from anywhere — lazily creates
  * the shared `AudioContext` on first use, resumes it if the browser
  * started it suspended (e.g. before any user gesture), and is a no-op
  * when Web Audio is unavailable (SSR, old browsers).
  */
-export function play(sound: SoundName = "chime", options?: { volume?: number }): void {
-  if (!enabled || !isSoundName(sound)) return;
+export function play(
+  sound: SoundName | LegacySoundName = "tap",
+  options?: { volume?: number },
+): void {
+  const cue = resolveSoundName(sound);
+  if (!enabled || !cue) return;
   if (typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive === false) return;
 
   const playVolume = globalVolume * normalizeVolume(options?.volume, 1);
@@ -230,7 +251,7 @@ export function play(sound: SoundName = "chime", options?: { volume?: number }):
   const context = getAudioContext();
   if (!context) return;
 
-  const recipe = RECIPES[sound];
+  const recipe = THEMES[theme][cue];
   if (context.state === "running") {
     renderRecipe(context, recipe, playVolume);
   } else {
