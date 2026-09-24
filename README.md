@@ -70,22 +70,22 @@ Cuelume starts enabled at full volume and does not read or write storage.
 
 | Name      | Character                    | Suggested use                    |
 | --------- | ---------------------------- | -------------------------------- |
-| `chime`   | Soft two-note ascending bell | Default hover                    |
-| `sparkle` | Quick four-note twinkle      | Playful accents                  |
-| `droplet` | Single note gliding down     | Dismiss, collapse                |
-| `bloom`   | Warm slow swell              | Reveal, expand                   |
+| `chime`   | Soft two-note ascending glass tink | Default hover              |
+| `sparkle` | Quick four-note twinkle sweeping left to right | Playful accents |
+| `droplet` | Glass tap that dips and settles | Dismiss, collapse             |
+| `bloom`   | Warm slow chord swell        | Reveal, expand                   |
 | `whisper` | Soft hush with a falling tone | Tooltips and quiet previews      |
 | `tick`    | Crisp instant tick           | Nav and menu hover               |
-| `press`   | Dull muted knock             | Pointer down                     |
-| `release` | Brighter springy tick        | Pointer up                       |
+| `press`   | Muted knock with a low thud  | Pointer down                     |
+| `release` | Brighter springy tick with a lighter thud | Pointer up          |
 | `toggle`  | Mechanical click-clack       | Switches, tabs                   |
-| `success` | Warm three-note confirmation | After an action succeeds (e.g. copy to clipboard) |
+| `success` | Warm three-note glass confirmation | After an action succeeds (e.g. copy to clipboard) |
 | `error`   | Soft knock and descending refusal | Recoverable errors          |
-| `page`    | Papery flick with a glass tick | Pages, galleries, carousels    |
+| `page`    | Papery flick across the stereo field with a glass tick | Pages, galleries, carousels |
 | `loading` | Brief unresolved rising shimmer | User-initiated work starting  |
-| `ready`   | Rising lock-on with a clear resolve | Content or system ready     |
-| `pulse`   | Compact synthetic chirp         | Primary buttons and controls  |
-| `scan`    | Fast three-step locator signal  | Menus and secondary buttons   |
+| `ready`   | Octave lock-on resolving to a glass chord | Content or system ready |
+| `pulse`   | Compact octave chirp with a little thud | Primary buttons and controls |
+| `scan`    | Fast three-step locator sweeping left to right | Menus and secondary buttons |
 | `arrival` | Rising harmonic portal          | Client-side page arrivals     |
 
 ## API
@@ -105,6 +105,7 @@ import { play, bind, setEnabled, setVolume, sounds, type SoundName } from "cuelu
 
 - **Pointer-aware.** Hover requires a fine mouse pointer. Press and release support mouse, touch, and pen; toggle follows native click activation, including keyboard.
 - **Hover repeat guard.** Hover sounds are globally throttled to one every 150ms, so sweeping across a menu stays quiet.
+- **One key, one room.** Every pitched cue is tuned to A major, so overlapping cues harmonize instead of clashing, and cues that want air share one small synthesized room rather than each carrying an echo.
 - **Audible without clipping.** One shared boosted output stage keeps sounds clear, with native compression protecting overlapping cues.
 - **One lazy `AudioContext`.** Shared across all sounds, created on first use.
 - **Autoplay-friendly.** Attempts to resume suspended audio without surfacing errors when a browser blocks it.

@@ -1,15 +1,16 @@
 /**
  * The audio engine — synthesizes each sound live via the Web Audio API
  * on one shared, lazily created `AudioContext`. No audio files, no
- * dependencies. Every sound carries a gentle envelope (and often a soft
- * shimmer tail) instead of a hard transient, so nothing feels harsh.
+ * dependencies. Every sound carries a gentle envelope, and the ones that
+ * want air share one small synthesized room instead of a slapback delay,
+ * so nothing feels harsh or echoey.
  */
 
 import {
   RECIPES,
   isSoundName,
   type NoiseLayer,
-  type Shimmer,
+  type SoundLayer,
   type SoundName,
   type SoundRecipe,
   type ToneLayer,
@@ -17,8 +18,32 @@ import {
 
 const SOURCE_STOP_PADDING = 0.05;
 const CLEANUP_MARGIN = 0.05;
-const INAUDIBLE_GAIN = 0.001;
 const OUTPUT_GAIN = 4;
+/** Length of the shared room's impulse response, in seconds. */
+const SPACE_SECONDS = 0.5;
+
+function renderEnvelope(context: AudioContext, layer: SoundLayer, startTime: number): GainNode {
+  const gain = context.createGain();
+  gain.gain.setValueAtTime(0, startTime);
+  gain.gain.linearRampToValueAtTime(layer.peak, startTime + layer.attack);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + layer.attack + layer.decay);
+  return gain;
+}
+
+function connectLayer(
+  context: AudioContext,
+  gain: GainNode,
+  destination: AudioNode,
+  layer: SoundLayer,
+): void {
+  if (!layer.pan) {
+    gain.connect(destination);
+    return;
+  }
+  const panner = context.createStereoPanner();
+  panner.pan.value = layer.pan;
+  gain.connect(panner).connect(destination);
+}
 
 function renderTone(
   context: AudioContext,
@@ -36,12 +61,9 @@ function renderTone(
     oscillator.frequency.exponentialRampToValueAtTime(layer.glideTo, startTime + glideTime);
   }
 
-  const gain = context.createGain();
-  gain.gain.setValueAtTime(0.0001, startTime);
-  gain.gain.exponentialRampToValueAtTime(layer.peak, startTime + layer.attack);
-  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + layer.attack + layer.decay);
-
-  oscillator.connect(gain).connect(destination);
+  const gain = renderEnvelope(context, layer, startTime);
+  oscillator.connect(gain);
+  connectLayer(context, gain, destination, layer);
   oscillator.start(startTime);
   oscillator.stop(startTime + layer.attack + layer.decay + SOURCE_STOP_PADDING);
 }
@@ -66,44 +88,32 @@ function renderNoise(
   filter.frequency.value = layer.filterFrequency;
   if (layer.filterQ !== undefined) filter.Q.value = layer.filterQ;
 
-  const gain = context.createGain();
-  gain.gain.setValueAtTime(0.0001, startTime);
-  gain.gain.exponentialRampToValueAtTime(layer.peak, startTime + layer.attack);
-  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + layer.attack + layer.decay);
-
-  source.connect(filter).connect(gain).connect(destination);
+  const gain = renderEnvelope(context, layer, startTime);
+  source.connect(filter).connect(gain);
+  connectLayer(context, gain, destination, layer);
   source.start(startTime);
   source.stop(startTime + duration);
 }
 
-/** Wires a soft echo/shimmer send off `source`, feeding back into `destination`. */
-function attachShimmer(
-  context: AudioContext,
-  source: AudioNode,
-  destination: AudioNode,
-  shimmer: Shimmer,
-): AudioNode[] {
-  const delay = context.createDelay(1);
-  delay.delayTime.value = shimmer.delay;
-
-  const feedbackFilter = context.createBiquadFilter();
-  feedbackFilter.type = "lowpass";
-  feedbackFilter.frequency.value = shimmer.lowpass;
-
-  const feedbackGain = context.createGain();
-  feedbackGain.gain.value = shimmer.feedback;
-
-  const wetGain = context.createGain();
-  wetGain.gain.value = shimmer.wet;
-
-  source.connect(delay);
-  delay.connect(feedbackFilter);
-  feedbackFilter.connect(feedbackGain);
-  feedbackGain.connect(delay);
-  feedbackFilter.connect(wetGain);
-  wetGain.connect(destination);
-
-  return [delay, feedbackFilter, feedbackGain, wetGain];
+/**
+ * Builds the impulse response of a small, dark room: decorrelated noise in
+ * each channel, decaying exponentially, with the highs damped more as the
+ * tail runs out — like the short room tone behind a system sound.
+ */
+function createSpaceImpulse(context: AudioContext): AudioBuffer {
+  const length = Math.max(1, Math.floor(SPACE_SECONDS * context.sampleRate));
+  const buffer = context.createBuffer(2, length, context.sampleRate);
+  for (let channel = 0; channel < 2; channel++) {
+    const data = buffer.getChannelData(channel);
+    let lowpassed = 0;
+    for (let i = 0; i < length; i++) {
+      const progress = i / length;
+      const damping = 0.4 - 0.3 * progress;
+      lowpassed += (2 * Math.random() - 1 - lowpassed) * damping;
+      data[i] = lowpassed * Math.exp(-progress * 8);
+    }
+  }
+  return buffer;
 }
 
 function sourceEnd(recipe: SoundRecipe): number {
@@ -114,17 +124,12 @@ function sourceEnd(recipe: SoundRecipe): number {
   );
 }
 
-function shimmerTail(shimmer?: Shimmer): number {
-  if (!shimmer || shimmer.feedback <= 0) return 0;
-  if (shimmer.feedback >= 1) return shimmer.delay;
+type Bus = { output: GainNode; space: ConvolverNode };
 
-  return shimmer.delay * (1 + Math.ceil(Math.log(INAUDIBLE_GAIN) / Math.log(shimmer.feedback)));
-}
+let sharedBus: Bus | null = null;
 
-let sharedOutput: GainNode | null = null;
-
-function getOutput(context: AudioContext): GainNode {
-  if (sharedOutput) return sharedOutput;
+function getBus(context: AudioContext): Bus {
+  if (sharedBus) return sharedBus;
 
   const output = context.createGain();
   output.gain.value = OUTPUT_GAIN;
@@ -137,20 +142,28 @@ function getOutput(context: AudioContext): GainNode {
   limiter.release.value = 0.08;
 
   output.connect(limiter).connect(context.destination);
-  sharedOutput = output;
-  return output;
+
+  const space = context.createConvolver();
+  space.buffer = createSpaceImpulse(context);
+  space.connect(output);
+
+  sharedBus = { output, space };
+  return sharedBus;
 }
 
 function renderRecipe(context: AudioContext, recipe: SoundRecipe, volume: number): void {
   const now = context.currentTime;
-  const output = getOutput(context);
+  const { output, space } = getBus(context);
   const master = context.createGain();
   master.gain.value = recipe.masterGain * volume;
   master.connect(output);
 
-  const shimmerNodes = recipe.shimmer
-    ? attachShimmer(context, master, output, recipe.shimmer)
-    : [];
+  let send: GainNode | null = null;
+  if (recipe.space) {
+    send = context.createGain();
+    send.gain.value = recipe.space;
+    master.connect(send).connect(space);
+  }
 
   for (const layer of recipe.layers) {
     const startTime = now + (layer.offset ?? 0);
@@ -158,10 +171,11 @@ function renderRecipe(context: AudioContext, recipe: SoundRecipe, volume: number
     else renderNoise(context, master, layer, startTime);
   }
 
-  const cleanupAfterMs = (sourceEnd(recipe) + shimmerTail(recipe.shimmer) + CLEANUP_MARGIN) * 1000;
+  const tail = send ? SPACE_SECONDS : 0;
+  const cleanupAfterMs = (sourceEnd(recipe) + tail + CLEANUP_MARGIN) * 1000;
   setTimeout(() => {
     master.disconnect();
-    for (const node of shimmerNodes) node.disconnect();
+    send?.disconnect();
   }, cleanupAfterMs);
 }
 

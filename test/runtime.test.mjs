@@ -19,6 +19,7 @@ function restoreGlobals() {
 const audioParam = () => ({
   value: 0,
   setValueAtTime() {},
+  linearRampToValueAtTime() {},
   exponentialRampToValueAtTime() {},
 });
 
@@ -163,6 +164,17 @@ test("volume is clamped and one boosted output bus is reused", async (context) =
       compressors.push(node);
       return node;
     }
+    createConvolver() {
+      return Object.assign(new AudioNodeStub("convolver"), { buffer: null });
+    }
+    createOscillator() {
+      return Object.assign(new AudioNodeStub("oscillator"), {
+        frequency: audioParam(),
+        detune: audioParam(),
+        start() {},
+        stop() {},
+      });
+    }
     createBuffer() {
       return { getChannelData: () => new Float32Array(1) };
     }
@@ -185,6 +197,8 @@ test("volume is clamped and one boosted output bus is reused", async (context) =
   setGlobal("window", { AudioContext: VolumeContext });
 
   const { play, setVolume } = await import(`../dist/audio/engine.js?volume=${Date.now()}`);
+  const { RECIPES } = await import("../dist/sounds/recipes.js");
+  const base = RECIPES.press.masterGain;
 
   setVolume(2);
   play("press", { volume: 0.5 });
@@ -202,7 +216,7 @@ test("volume is clamped and one boosted output bus is reused", async (context) =
 
   assert.deepEqual(
     masters.map(({ gain }) => gain.value),
-    [0.2, 0.1, 0.2, 0.2],
+    [base * 0.5, base * 0.25, base * 0.5, base * 0.5],
   );
   assert.ok(output.gain.value > 1);
   assert.equal(compressors.length, 1);
@@ -233,6 +247,9 @@ test("binding is delegated, dynamic, idempotent, and globally throttled", async 
     createDynamicsCompressor() {
       return compressor(new AudioNodeStub());
     }
+    createConvolver() {
+      return Object.assign(new AudioNodeStub(), { buffer: null });
+    }
     createOscillator() {
       return Object.assign(new AudioNodeStub(), {
         frequency: audioParam(),
@@ -243,8 +260,8 @@ test("binding is delegated, dynamic, idempotent, and globally throttled", async 
         stop() {},
       });
     }
-    createBuffer() {
-      counts.buffers++;
+    createBuffer(channels) {
+      if (channels === 1) counts.buffers++;
       return { getChannelData: () => new Float32Array(1) };
     }
     createBufferSource() {
@@ -252,9 +269,6 @@ test("binding is delegated, dynamic, idempotent, and globally throttled", async 
     }
     createBiquadFilter() {
       return Object.assign(new AudioNodeStub(), { frequency: audioParam(), Q: audioParam() });
-    }
-    createDelay() {
-      return Object.assign(new AudioNodeStub(), { delayTime: audioParam() });
     }
   }
 
@@ -354,7 +368,7 @@ test("binding is delegated, dynamic, idempotent, and globally throttled", async 
   const oscillatorsBeforeInvalid = counts.oscillators;
   now += 151;
   root.emit("pointerenter", invalid);
-  assert.equal(counts.oscillators, oscillatorsBeforeInvalid + 2);
+  assert.equal(counts.oscillators, oscillatorsBeforeInvalid + 4);
 
   const child = new FakeElement(later);
   now += 151;
@@ -363,7 +377,7 @@ test("binding is delegated, dynamic, idempotent, and globally throttled", async 
 
 });
 
-test("finished shimmer graphs disconnect after their audible tail", async (context) => {
+test("finished graphs disconnect after their room tail", async (context) => {
   context.after(restoreGlobals);
   const timers = [];
   const disconnected = [];
@@ -391,20 +405,17 @@ test("finished shimmer graphs disconnect after their audible tail", async (conte
     sampleRate = 1;
     destination = new AudioNodeStub("destination");
     createGain() {
-      const names = ["output", "master", "feedback-gain", "wet-gain", "tone-gain", "tone-gain"];
+      const names = ["output", "master", "send"];
       return Object.assign(new AudioNodeStub(names[gainCount++] ?? "gain"), { gain: audioParam() });
     }
     createDynamicsCompressor() {
       return compressor(new AudioNodeStub("limiter"));
     }
-    createDelay() {
-      return Object.assign(new AudioNodeStub("delay"), { delayTime: audioParam() });
+    createConvolver() {
+      return Object.assign(new AudioNodeStub("space"), { buffer: null });
     }
-    createBiquadFilter() {
-      return Object.assign(new AudioNodeStub("feedback-filter"), {
-        frequency: audioParam(),
-        Q: audioParam(),
-      });
+    createBuffer() {
+      return { getChannelData: () => new Float32Array(1) };
     }
     createOscillator() {
       return Object.assign(new AudioNodeStub("oscillator"), {
@@ -426,13 +437,14 @@ test("finished shimmer graphs disconnect after their audible tail", async (conte
   play("chime");
 
   assert.equal(timers.length, 1);
-  assert.equal(Math.round(timers[0].delay), 1176);
-  assert.equal(nodes.get("master").connections.includes(nodes.get("output")), true);
-  assert.equal(nodes.get("wet-gain").connections.includes(nodes.get("output")), true);
+  assert.equal(Math.round(timers[0].delay), 892);
+  assert.deepEqual(nodes.get("master").connections, [nodes.get("output"), nodes.get("send")]);
+  assert.deepEqual(nodes.get("send").connections, [nodes.get("space")]);
+  assert.deepEqual(nodes.get("space").connections, [nodes.get("output")]);
   assert.deepEqual(nodes.get("output").connections, [nodes.get("limiter")]);
   assert.deepEqual(nodes.get("limiter").connections, [nodes.get("destination")]);
   timers[0].callback();
-  assert.deepEqual(disconnected, ["master", "delay", "feedback-filter", "feedback-gain", "wet-gain"]);
+  assert.deepEqual(disconnected, ["master", "send"]);
 
   play("chime");
   assert.equal(timers.length, 2);
