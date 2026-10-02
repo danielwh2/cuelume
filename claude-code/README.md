@@ -30,6 +30,10 @@ Your choice is kept across sessions.
 
 `press` is modelled on the trackpad and keycap sounds in DawoodUI's Artasaka preview.
 
+## What it does on your machine
+
+It plays the WAV files bundled in this folder and keeps your theme choice in Claude Code's plugin store. It reads nothing else, runs no other program and sends nothing over the network.
+
 ## How the sounds are made
 
 Cuelume synthesizes its cues live with Web Audio. A Claude Code mod can only play audio files, so each cue here is rendered once from Cuelume's own recipes to a 48 kHz WAV. The renderer skips Cuelume's output limiter, so a cue is close to what the library plays in a browser, not identical.
