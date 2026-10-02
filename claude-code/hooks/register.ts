@@ -56,17 +56,21 @@ export const register: Register = on => {
     return { text: choice === OFF ? 'cuelume: off.' : `cuelume: ${choice}.` }
   })
 
-  // The cue is awaited beside next(e): a call left running after the hook returns never plays,
-  // and beside next(e) the answer and the dialog still do not wait on the sound.
+  // The cue starts before next(e) and is awaited after it: a call left running once the hook returns never
+  // plays, and this way the answer and the dialog do not wait on the sound. Each hook returns what next gave back.
   on('turn.complete', async ($, e, next) => {
     const isWorthRinging = e.agentId === undefined && e.reason === 'answer' && e.durationMs >= MIN_TURN_MS
-    const [answer] = await Promise.all([next(e), isWorthRinging ? cue($, 'ready') : undefined])
+    const playing = isWorthRinging ? cue($, 'ready') : undefined
+    const answer = await next(e)
+    await playing
 
     return answer
   })
 
   on('classic.PermissionRequest', async ($, e, next) => {
-    const [decision] = await Promise.all([next(e), cue($, 'attention')])
+    const playing = cue($, 'attention')
+    const decision = await next(e)
+    await playing
 
     return decision
   })
