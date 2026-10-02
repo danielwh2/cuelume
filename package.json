@@ -38,7 +38,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc",
-    "test": "npm run build && node --test",
+    "test": "npm run build && node --test \"test/*.test.mjs\"",
     "prepack": "npm run build"
   },
   "devDependencies": {

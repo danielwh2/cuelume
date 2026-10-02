@@ -1,0 +1,10 @@
+{
+  "name": "cuelume",
+  "version": "0.1.0",
+  "description": "Two cuelume sounds for Claude Code: ready when a long turn ends, attention when a permission prompt waits.",
+  "author": { "name": "Daniel Belyi", "url": "https://github.com/danielwh2" },
+  "homepage": "https://github.com/danielwh2/cuelume/tree/main/claude-code",
+  "repository": "https://github.com/danielwh2/cuelume",
+  "license": "MIT",
+  "keywords": ["sound", "audio", "notifications", "mod"]
+}

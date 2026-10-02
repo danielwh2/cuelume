@@ -331,6 +331,17 @@ document.addEventListener("astro:page-load", () => play("navigate"));
 
 Browsers block audio on a fresh visit until the user interacts with the page. The navigate cue therefore plays on client-side navigations after that first interaction.
 
+## Claude Code
+
+Cuelume also ships as a Claude Code plugin with two cues: `ready` when a turn of ten seconds or more finishes, and `attention` when a permission prompt is waiting on you.
+
+```
+/plugin marketplace add danielwh2/cuelume
+/plugin install cuelume@cuelume
+```
+
+`/cuelume bubble` switches the theme and plays it, and `/cuelume off` silences it. See [claude-code/README.md](claude-code/README.md).
+
 ## License
 
 MIT
