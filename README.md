@@ -231,6 +231,8 @@ play("select", { theme: "bubble" }); // one playful moment; the theme stays defa
 
 `default` and `mech` sit in a calm register for all-day use. Reach for `bubble` when a product, or one moment in it, should feel playful, and `press` when it should feel like touching hardware: clicky, deep and precise.
 
+`press` is modelled on the trackpad and keycap sounds in DawoodUI's Artasaka preview.
+
 ## Sound settings
 
 Cuelume starts enabled at full volume and never reads or writes storage. Your app owns the controls, labels, and persistence:
