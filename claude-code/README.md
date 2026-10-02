@@ -34,7 +34,16 @@ Your choice is kept across sessions.
 
 It plays the WAV files bundled in this folder and keeps your theme choice in Claude Code's plugin store. It reads nothing else, runs no other program and sends nothing over the network.
 
-The plugin hooks the permission request only to play `attention` when the prompt appears. It passes the request on unchanged and never allows, denies or answers it: that decision stays with you.
+## Hooks
+
+The plugin registers four hooks. None of them decides anything: each passes its event on unchanged and returns what Claude Code gave back.
+
+| Hook | When it runs | What it does | What it decides |
+| --- | --- | --- | --- |
+| `classic.PermissionRequest` | A permission prompt is about to show | Plays `attention` | Nothing. It never allows, denies or answers the request; that decision stays with you |
+| `turn.complete` | A turn ends | Plays `ready` if the turn ran ten seconds or more | Nothing. The answer is returned as it was |
+| `session.start` | A session starts | Registers the `/cuelume` command | Nothing |
+| `command.run` | You run `/cuelume` | Saves the theme you chose and plays it | Nothing |
 
 ## How the sounds are made
 
