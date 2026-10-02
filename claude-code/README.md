@@ -36,7 +36,7 @@ It plays the WAV files bundled in this folder and keeps your theme choice in Cla
 
 ## Hooks
 
-The plugin registers four hooks. None of them decides anything: each passes its event on unchanged and returns what Claude Code gave back.
+The plugin registers four hooks. None of them makes a decision for you. The first three pass their event on unchanged and return what Claude Code gave back; the last answers the plugin's own command.
 
 | Hook | When it runs | What it does | What it decides |
 | --- | --- | --- | --- |
