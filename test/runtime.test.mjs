@@ -1071,7 +1071,7 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
   const { setEnabled } = await import("../dist/audio/engine.js");
   bind(root);
   bind(root);
-  for (const type of ["click", "change", "keydown", "pointerenter", "pointerdown", "pointerup"]) {
+  for (const type of ["click", "change", "keydown", "pointerenter", "pointerdown", "pointerup", "pointermove", "scroll"]) {
     assert.equal(root.listeners.get(type).length, 1, type);
   }
 
@@ -1170,8 +1170,14 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
   key(0, { key: "Enter" }, new FakeElement(form, "BUTTON"));
 
   // Deprecated hover: fine mouse only, throttled, silent inside itself, defaults to select.
+  // The typing above disarmed it before the mouse had been seen, so the first move only
+  // says where the mouse is; the next re-arms.
   const link = new FakeElement(root, "A", { "data-cuelume-hover": "" });
+  const move = (clientX, clientY) => root.emit("pointermove", root, { clientX, clientY });
   now += 1_000;
+  move(50, 50);
+  played(0, () => root.emit("pointerenter", link));
+  move(60, 50);
   assert.equal(played(1, () => root.emit("pointerenter", link)), gainOf("select"));
   now += 100;
   played(0, () => root.emit("pointerenter", link));
@@ -1180,6 +1186,37 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
   now += 151;
   played(0, () => root.emit("pointerenter", new FakeElement(link), { relatedTarget: link }));
   played(0, () => root.emit("pointerenter", link, { pointerType: "touch" }));
+
+  // A mouse press disarms hover: the pointerenter a browser re-dispatches when an SPA
+  // navigation swaps the DOM under the still cursor stays quiet, however long that takes.
+  now += 1_000;
+  played(0, () => root.emit("pointerdown", link, { clientX: 10, clientY: 10 }));
+  now += 10_000;
+  played(0, () => root.emit("pointerenter", link));
+  // hand jitter within 4px stays quiet; real movement re-arms at once, and the
+  // suppressed enters didn't take the throttle's slot
+  move(12, 11);
+  played(0, () => root.emit("pointerenter", link));
+  move(30, 30);
+  played(1, () => root.emit("pointerenter", link));
+  // a scroll disarms at the last mouse position
+  root.emit("scroll");
+  now += 1_000;
+  played(0, () => root.emit("pointerenter", link));
+  move(31, 31);
+  played(0, () => root.emit("pointerenter", link));
+  move(60, 60);
+  played(1, () => root.emit("pointerenter", link));
+  // so does a key: Enter on a link navigates under a still mouse too
+  now += 1_000;
+  played(0, () => root.emit("keydown", new FakeElement(root, "A"), { key: "Enter" }));
+  played(0, () => root.emit("pointerenter", link));
+  move(90, 90);
+  played(1, () => root.emit("pointerenter", link));
+  // a touch press leaves the mouse-only hover armed
+  now += 1_000;
+  played(0, () => root.emit("pointerdown", link, { pointerType: "touch", clientX: 0, clientY: 0 }));
+  played(1, () => root.emit("pointerenter", link));
 
   // Deprecated press/release: a pair plays one tap, on press; release alone still plays.
   const pair = new FakeElement(root, "BUTTON", { "data-cuelume-press": "", "data-cuelume-release": "" });

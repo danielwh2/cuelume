@@ -294,7 +294,7 @@ The old bindings also keep working until 1.0:
 
 | 0.2 binding            | In 0.3                                                                                  |
 | ---------------------- | --------------------------------------------------------------------------------------- |
-| `data-cuelume-hover`   | Plays `select` on hover. Hover is no longer a built-in binding; call `play()` from your own handler if you want it. |
+| `data-cuelume-hover`   | Plays `select` on hover, and stays quiet after a click, key press or scroll until the mouse moves, so SPA navigations don't chirp. Hover is no longer a built-in binding; call `play()` from your own handler if you want it. |
 | `data-cuelume-press`   | Plays `tap` on pointer down. Use `data-cuelume-tap`.                                    |
 | `data-cuelume-release` | Plays `tap` on pointer up, unless the element also has `data-cuelume-press`, so an old press/release pair plays one `tap`. |
 
