@@ -264,7 +264,7 @@ import { play, bind, setEnabled, setVolume, setTheme, sounds, themes, type Sound
   - `theme?: ThemeName`: the material for this play only.
   - `duration?: number`: how long a `count` runs, in milliseconds, clamped to `300–2000`.
 - **`bind(root?: ParentNode)`**: delegate all `data-cuelume-*` interactions under `root` (defaults to the whole document). Idempotent, and handles elements added later.
-- **`setEnabled(enabled: boolean)`**: enable or disable future playback. Does not persist the preference or stop sounds already playing.
+- **`setEnabled(enabled: boolean)`**: enable or disable future playback. Does not persist the preference or stop sounds already playing; once they end, audio is suspended.
 - **`setVolume(volume: number)`**: set the global volume for future playback, clamped to `0–1`. Non-finite values are ignored and preferences are not persisted.
 - **`setTheme(theme: ThemeName)`**: switch the material of future playback. Unknown names are ignored; the choice isn't persisted.
 - **`themes`**: the built-in theme names, `["default", "mech", "bubble", "press"]`.
@@ -304,7 +304,7 @@ The old bindings also keep working until 1.0:
 - **Audible without clipping.** One shared boosted output stage keeps sounds clear, with native compression protecting overlapping cues.
 - **Struck, not played back.** Tones are modelled on real bars: each overtone dies faster the higher it is, and a brief mallet contact starts the note. Every play of a frequent cue is one strike, a little harder or softer than the last, so a harder one is louder and brighter together and no two sound identical. Outcome cues play the same every time, so their meaning never blurs.
 - **One faint room.** Every cue rings very faintly into one shared, short stereo room (about 22 dB down), which places it in the space around the listener rather than inside their head. `success` and `ready` ring into it a little more.
-- **One lazy `AudioContext`.** Shared across all sounds, created on first use.
+- **One lazy `AudioContext`.** Shared across all sounds, created on first use and suspended when idle, so it doesn't hold the audio device open.
 - **Autoplay-friendly.** Attempts to resume suspended audio without surfacing errors when a browser blocks it.
 - **SSR-safe.** Importing on the server is a no-op.
 - **Safe fallback.** Invalid runtime names and unavailable or blocked Web Audio make `play()` a silent no-op. An invalid attribute value plays that binding's default cue.

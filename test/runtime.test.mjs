@@ -662,6 +662,7 @@ test("invalid names and AudioContext failures are silent", async (context) => {
     }
   }
 
+  setGlobal("setTimeout", () => 0); // the idle timer a resumed, silent context starts
   setGlobal("window", { AudioContext: DeferredContext });
   const deferred = await import(`../dist/audio/engine.js?deferred=${Date.now()}`);
   deferred.play("tap");
@@ -1410,13 +1411,13 @@ test("every play rings into one shared room, and a finished play lets go of it",
   assert.notDeepEqual(impulse[0], impulse[1]);
 
   // one cleanup, when the last of its sources has ended; the room itself stays up for the next play
+  assert.equal(timers.length, 1);
   const sources = made.filter((n) => n.name === "oscillator" || n.name === "noise");
   for (const source of sources.slice(1)) source.onended();
   assert.deepEqual(disconnected, []);
   sources[0].onended();
   assert.deepEqual(disconnected, ["master", "send"]);
   // the timer kept for a context that never ends its sources finds nothing left to do
-  assert.equal(timers.length, 1);
   const longest = Math.max(...RECIPES.success.layers.filter((l) => l.from !== "strong").map((l) => l.attack + l.decay));
   assert.equal(Math.round(timers[0].delay), Math.round((PLAYBACK_LEAD + longest + 0.05 + 1) * 1000));
   timers[0].callback();
@@ -1427,4 +1428,200 @@ test("every play rings into one shared room, and a finished play lets go of it",
   play("tap");
   play("type");
   assert.equal(made.filter((n) => n.name === "room").length, rooms);
+});
+
+// Stands in for setTimeout and clearTimeout; `tick(ms)` runs whatever falls due.
+function manualTimers() {
+  let now = 0;
+  let id = 0;
+  const due = new Map();
+  setGlobal("setTimeout", (callback, delay = 0) => {
+    due.set(++id, { callback, at: now + delay });
+    return id;
+  });
+  setGlobal("clearTimeout", (timer) => due.delete(timer));
+  return {
+    due,
+    tick(ms) {
+      now += ms;
+      for (const [timer, { callback, at }] of [...due].sort((a, b) => a[1].at - b[1].at)) {
+        if (at <= now && due.delete(timer)) callback();
+      }
+    },
+  };
+}
+
+// A recording context that suspends and resumes when the test settles it, as a browser does a moment later.
+function suspendableContext() {
+  const { Context, log } = recordingContext();
+  const made = [];
+  class Suspendable extends Context {
+    calls = [];
+    pending = [];
+    constructor() {
+      super();
+      made.push(this);
+    }
+    suspend() {
+      this.calls.push("suspend");
+      return this.later("suspended");
+    }
+    resume() {
+      this.calls.push("resume");
+      return this.later("running");
+    }
+    later(state) {
+      return new Promise((resolve) => this.pending.push(() => {
+        this.state = state;
+        resolve();
+      }));
+    }
+    settle() {
+      for (const done of this.pending.splice(0)) done();
+    }
+  }
+  return { Suspendable, log, made };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("the context suspends a second after the last play ends, and the next play resumes it", async (context) => {
+  context.after(restoreGlobals);
+  const { Suspendable, log, made } = suspendableContext();
+  const timers = manualTimers();
+  setGlobal("window", { AudioContext: Suspendable });
+  const { play } = await import(`../dist/audio/engine.js?idle=${Date.now()}`);
+  const end = (from) => {
+    for (const source of log.sources.slice(from)) source.onended();
+  };
+
+  play("tap");
+  const ctx = made[0];
+  end(0);
+  timers.tick(999);
+  assert.deepEqual(ctx.calls, []);
+  timers.tick(1);
+  assert.deepEqual(ctx.calls, ["suspend"]);
+  ctx.settle();
+  await flush();
+  assert.equal(ctx.state, "suspended");
+
+  // the next play resumes the same context, then renders
+  const before = log.sources.length;
+  play("tap");
+  assert.equal(log.sources.length, before);
+  ctx.settle();
+  await flush();
+  assert.deepEqual(ctx.calls, ["suspend", "resume"]);
+  assert.ok(log.sources.length > before);
+  assert.equal(made.length, 1);
+
+  // a play before the timer fires cancels it, and overlapping plays suspend only once the last has ended
+  end(before);
+  timers.tick(500);
+  const success = log.sources.length;
+  play("success");
+  const tap = log.sources.length;
+  play("tap");
+  end(tap);
+  timers.tick(500);
+  assert.equal(ctx.calls.length, 2);
+  for (const source of log.sources.slice(success, tap)) source.onended();
+  timers.tick(999);
+  assert.equal(ctx.calls.length, 2);
+  timers.tick(1);
+  assert.deepEqual(ctx.calls, ["suspend", "resume", "suspend"]);
+});
+
+test("a play while a suspend is in flight resumes first, and setEnabled(false) lets go at once", async (context) => {
+  context.after(restoreGlobals);
+  const { Suspendable, log, made } = suspendableContext();
+  const timers = manualTimers();
+  setGlobal("window", { AudioContext: Suspendable });
+  const { play, setEnabled } = await import(`../dist/audio/engine.js?suspending=${Date.now()}`);
+
+  play("tap");
+  const ctx = made[0];
+  for (const source of log.sources) source.onended();
+  timers.tick(1000);
+  assert.deepEqual(ctx.calls, ["suspend"]);
+  // still "running", but about to stop: rendering now would play into a suspended context
+  assert.equal(ctx.state, "running");
+  const before = log.sources.length;
+  play("tap");
+  assert.equal(log.sources.length, before);
+  assert.deepEqual(ctx.calls, ["suspend", "resume"]);
+  ctx.settle();
+  await flush();
+  assert.equal(ctx.state, "running");
+  assert.ok(log.sources.length > before);
+
+  // switched off while a play still sounds: it suspends once that play has ended
+  setEnabled(false);
+  assert.equal(ctx.calls.length, 2);
+  for (const source of log.sources) source.onended();
+  timers.tick(1000);
+  assert.deepEqual(ctx.calls, ["suspend", "resume", "suspend"]);
+  ctx.settle();
+  await flush();
+
+  // switched off with nothing sounding: it suspends right away
+  setEnabled(true);
+  play("tap");
+  ctx.settle();
+  await flush();
+  for (const source of log.sources) source.onended();
+  assert.equal(ctx.calls.length, 4);
+  setEnabled(false);
+  assert.deepEqual(ctx.calls, ["suspend", "resume", "suspend", "resume", "suspend"]);
+  setEnabled(true);
+});
+
+test("a refused or missing suspend and a refused resume stay silent", async (context) => {
+  context.after(restoreGlobals);
+  const { Context, log } = recordingContext();
+  const timers = manualTimers();
+  const calls = [];
+  class Refusing extends Context {
+    suspend() {
+      calls.push("suspend");
+      return Promise.reject(new Error("no"));
+    }
+    resume() {
+      calls.push("resume");
+      return Promise.reject(new Error("no"));
+    }
+  }
+  setGlobal("window", { AudioContext: Refusing });
+  const refusing = await import(`../dist/audio/engine.js?refused=${Date.now()}`);
+  refusing.play("tap");
+  for (const source of log.sources) source.onended();
+  timers.tick(1000);
+  await flush();
+  // the refusal leaves it running, and nothing in flight, so the next play renders straight away
+  const before = log.sources.length;
+  refusing.play("tap");
+  assert.ok(log.sources.length > before);
+  assert.deepEqual(calls, ["suspend"]);
+
+  class Throwing extends Context {
+    state = "suspended";
+    suspend() {
+      throw new Error("no");
+    }
+    resume() {
+      throw new Error("no");
+    }
+  }
+  setGlobal("window", { AudioContext: Throwing });
+  const throwing = await import(`../dist/audio/engine.js?throwing=${Date.now()}`);
+  assert.doesNotThrow(() => throwing.play("tap"));
+
+  // an older context without suspend() simply stays running
+  setGlobal("window", { AudioContext: Context });
+  const old = await import(`../dist/audio/engine.js?nosuspend=${Date.now()}`);
+  old.play("tap");
+  for (const source of log.sources) source.onended();
+  assert.doesNotThrow(() => timers.tick(1000));
+  assert.doesNotThrow(() => old.setEnabled(false));
 });

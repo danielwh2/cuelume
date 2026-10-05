@@ -259,6 +259,8 @@ function renderRecipe(
   emphasis: Emphasis,
   shape: Shape,
 ): void {
+  clearTimeout(idleTimer);
+  sounding++;
   const now = context.currentTime;
   const output = getOutput(context);
   const master = context.createGain();
@@ -293,6 +295,7 @@ function renderRecipe(
     if (voices.get(sound) === master) voices.delete(sound);
     master.disconnect();
     send.disconnect();
+    if (--sounding === 0) idleSoon(context);
   };
   let playing = sources.length;
   for (const source of sources) {
@@ -301,6 +304,38 @@ function renderRecipe(
     };
   }
   setTimeout(cleanup, (PLAYBACK_LEAD + sourceEnd(layers) + CLEANUP_FALLBACK) * 1000);
+}
+
+/**
+ * How long the context sits idle before it is suspended. Safari otherwise
+ * holds the audio device open at its smallest buffer for as long as the
+ * page lives, and other apps' audio can glitch. Long enough for the room and
+ * the limiter to ring out and to ride through a burst of clicks; the next
+ * play resumes it.
+ */
+const IDLE_SUSPEND_MS = 1000;
+/** Plays not yet let go. */
+let sounding = 0;
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
+/** A suspend in flight: the context still reads "running" but is about to stop. */
+let suspending = false;
+
+function idleSoon(context: AudioContext): void {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => suspend(context), IDLE_SUSPEND_MS);
+}
+
+function suspend(context: AudioContext): void {
+  if (context.state !== "running" || typeof context.suspend !== "function") return;
+  suspending = true;
+  const settled = () => {
+    suspending = false;
+  };
+  try {
+    void context.suspend().then(settled, settled);
+  } catch {
+    settled();
+  }
 }
 
 let sharedContext: AudioContext | null = null;
@@ -317,6 +352,8 @@ function normalizeVolume(value: unknown, fallback: number): number {
 /** Enables or disables future playback. Preference storage stays with the app. */
 export function setEnabled(value: boolean): void {
   if (typeof value === "boolean") enabled = value;
+  // nothing left to finish, so let go of the device now
+  if (!enabled && sharedContext && sounding === 0) suspend(sharedContext);
 }
 
 /**
@@ -376,9 +413,9 @@ function sinceLastPlay(sound: SoundName): number {
 
 /**
  * Plays a sound immediately. Safe to call from anywhere — lazily creates
- * the shared `AudioContext` on first use, resumes it if the browser
- * started it suspended (e.g. before any user gesture), and is a no-op
- * when Web Audio is unavailable (SSR, old browsers).
+ * the shared `AudioContext` on first use, resumes it if it is suspended
+ * (by the browser before any user gesture, or by Cuelume when idle), and is
+ * a no-op when Web Audio is unavailable (SSR, old browsers).
  */
 export function play(sound?: SoundName, options?: PlayOptions): void;
 /** @deprecated Renamed in v0.3 and removed in 1.0. See the migration table in the README. */
@@ -403,13 +440,16 @@ export function playInContext(sound: unknown, options: PlayOptions | undefined, 
   const recipe: SoundRecipe = THEMES[isThemeName(requested) ? requested : activeTheme][name];
   const emphasis = resolveEmphasis(options?.emphasis);
   const shape = shapeFor(name, interaction, emphasis, sinceLastPlay(name));
-  if (context.state === "running") {
+  // a context about to suspend is resumed first, not rendered into
+  if (context.state === "running" && !suspending) {
     renderRecipe(context, name, recipe, playVolume, emphasis, shape);
   } else {
     try {
       void context.resume().then(
         () => {
-          if (enabled && context.state === "running") renderRecipe(context, name, recipe, playVolume, emphasis, shape);
+          if (context.state !== "running") return;
+          if (enabled) renderRecipe(context, name, recipe, playVolume, emphasis, shape);
+          else if (sounding === 0) idleSoon(context);
         },
         () => {},
       );
