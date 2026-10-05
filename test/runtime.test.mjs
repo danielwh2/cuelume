@@ -1170,7 +1170,7 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
   key(0, { key: "Enter" }, new FakeElement(form, "BUTTON"));
 
   // Deprecated hover: fine mouse only, throttled, silent inside itself, defaults to select.
-  // The typing above disarmed it before the mouse had been seen, so the first move only
+  // The Enter above disarmed it before the mouse had been seen, so the first move only
   // says where the mouse is; the next re-arms.
   const link = new FakeElement(root, "A", { "data-cuelume-hover": "" });
   const move = (clientX, clientY) => root.emit("pointermove", root, { clientX, clientY });
@@ -1212,6 +1212,10 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
   played(0, () => root.emit("keydown", new FakeElement(root, "A"), { key: "Enter" }));
   played(0, () => root.emit("pointerenter", link));
   move(90, 90);
+  played(1, () => root.emit("pointerenter", link));
+  // a key that activates nothing, like Shift for a shift-click, leaves it armed
+  now += 1_000;
+  played(0, () => root.emit("keydown", link, { key: "Shift" }));
   played(1, () => root.emit("pointerenter", link));
   // a touch press leaves the mouse-only hover armed
   now += 1_000;
@@ -1467,6 +1471,9 @@ test("every play rings into one shared room, and a finished play lets go of it",
   assert.equal(made.filter((n) => n.name === "room").length, rooms);
 });
 
+/** How long the engine waits, idle, before it suspends the context. */
+const IDLE_MS = 10_000;
+
 // Stands in for setTimeout and clearTimeout; `tick(ms)` runs whatever falls due.
 function manualTimers() {
   let now = 0;
@@ -1522,7 +1529,7 @@ function suspendableContext() {
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-test("the context suspends a second after the last play ends, and the next play resumes it", async (context) => {
+test("the context suspends once it has been idle after the last play ends, and the next play resumes it", async (context) => {
   context.after(restoreGlobals);
   const { Suspendable, log, made } = suspendableContext();
   const timers = manualTimers();
@@ -1535,7 +1542,7 @@ test("the context suspends a second after the last play ends, and the next play 
   play("tap");
   const ctx = made[0];
   end(0);
-  timers.tick(999);
+  timers.tick(IDLE_MS - 1);
   assert.deepEqual(ctx.calls, []);
   timers.tick(1);
   assert.deepEqual(ctx.calls, ["suspend"]);
@@ -1555,16 +1562,16 @@ test("the context suspends a second after the last play ends, and the next play 
 
   // a play before the timer fires cancels it, and overlapping plays suspend only once the last has ended
   end(before);
-  timers.tick(500);
+  timers.tick(IDLE_MS / 2);
   const success = log.sources.length;
   play("success");
   const tap = log.sources.length;
   play("tap");
   end(tap);
-  timers.tick(500);
+  timers.tick(IDLE_MS / 2);
   assert.equal(ctx.calls.length, 2);
   for (const source of log.sources.slice(success, tap)) source.onended();
-  timers.tick(999);
+  timers.tick(IDLE_MS - 1);
   assert.equal(ctx.calls.length, 2);
   timers.tick(1);
   assert.deepEqual(ctx.calls, ["suspend", "resume", "suspend"]);
@@ -1580,7 +1587,7 @@ test("a play while a suspend is in flight resumes first, and setEnabled(false) l
   play("tap");
   const ctx = made[0];
   for (const source of log.sources) source.onended();
-  timers.tick(1000);
+  timers.tick(IDLE_MS);
   assert.deepEqual(ctx.calls, ["suspend"]);
   // still "running", but about to stop: rendering now would play into a suspended context
   assert.equal(ctx.state, "running");
@@ -1597,7 +1604,7 @@ test("a play while a suspend is in flight resumes first, and setEnabled(false) l
   setEnabled(false);
   assert.equal(ctx.calls.length, 2);
   for (const source of log.sources) source.onended();
-  timers.tick(1000);
+  timers.tick(IDLE_MS);
   assert.deepEqual(ctx.calls, ["suspend", "resume", "suspend"]);
   ctx.settle();
   await flush();
@@ -1633,7 +1640,7 @@ test("a refused or missing suspend and a refused resume stay silent", async (con
   const refusing = await import(`../dist/audio/engine.js?refused=${Date.now()}`);
   refusing.play("tap");
   for (const source of log.sources) source.onended();
-  timers.tick(1000);
+  timers.tick(IDLE_MS);
   await flush();
   // the refusal leaves it running, and nothing in flight, so the next play renders straight away
   const before = log.sources.length;
@@ -1659,7 +1666,7 @@ test("a refused or missing suspend and a refused resume stay silent", async (con
   const old = await import(`../dist/audio/engine.js?nosuspend=${Date.now()}`);
   old.play("tap");
   for (const source of log.sources) source.onended();
-  assert.doesNotThrow(() => timers.tick(1000));
+  assert.doesNotThrow(() => timers.tick(IDLE_MS));
   assert.doesNotThrow(() => old.setEnabled(false));
 });
 
@@ -1709,12 +1716,17 @@ test("a play blocked before activation starts audio on the first tap that counts
   win.emit("touchend");
   assert.equal(made.length, 0);
 
-  // switched off, a tap starts nothing
+  // switched off, a tap starts nothing and stops listening
   userActivation.hasBeenActive = true;
   setEnabled(false);
   win.emit("click");
   assert.equal(made.length, 0);
+  assert.deepEqual(win.listeners, []);
   setEnabled(true);
+  userActivation.hasBeenActive = false;
+  play("navigate");
+  assert.deepEqual(listening(win), GESTURES);
+  userActivation.hasBeenActive = true;
 
   // a tap anywhere does, even one with no cue of its own; the blocked cue stays dropped
   win.emit("touchend");
@@ -1726,7 +1738,7 @@ test("a play blocked before activation starts audio on the first tap that counts
   assert.deepEqual(win.listeners, []);
   assert.equal(log.sources.length, 0);
   // started without a cue, it still lets go of the device
-  timers.tick(1000);
+  timers.tick(IDLE_MS);
   assert.deepEqual(ctx.calls, ["resume", "suspend"]);
 });
 
@@ -1830,7 +1842,7 @@ test("warm builds the shared graph and starts the context without a sound", asyn
   // running and idle: warm doesn't hold the device open
   warm();
   assert.equal(ctx.calls.length, 2);
-  timers.tick(1000);
+  timers.tick(IDLE_MS);
   assert.deepEqual(ctx.calls, ["resume", "resume", "suspend"]);
   ctx.settle();
   await flush();
@@ -1899,10 +1911,10 @@ test("a closed context is dropped, and the next play builds a fresh one", async 
 
   // the old play ending late doesn't count against the new one, which still sounds
   for (const source of old) source.onended();
-  timers.tick(1000);
+  timers.tick(IDLE_MS);
   assert.deepEqual(made[1].calls, []);
   for (const source of log.sources.slice(old.length)) source.onended();
-  timers.tick(1000);
+  timers.tick(IDLE_MS);
   assert.deepEqual(made[1].calls, ["suspend"]);
   assert.deepEqual(made[0].calls, []);
 });

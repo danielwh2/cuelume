@@ -309,11 +309,12 @@ function renderRecipe(
 /**
  * How long the context sits idle before it is suspended. Safari otherwise
  * holds the audio device open at its smallest buffer for as long as the
- * page lives, and other apps' audio can glitch. Long enough for the room and
- * the limiter to ring out and to ride through a burst of clicks; the next
- * play resumes it.
+ * page lives, and other apps' audio can glitch. Resuming can reopen the
+ * device, which costs the next cue time and can swallow its start, so this
+ * is long enough that a page in use stays awake between clicks; the next
+ * play after it resumes the context.
  */
-const IDLE_SUSPEND_MS = 1000;
+const IDLE_SUSPEND_MS = 10_000;
 /** Plays not yet let go. */
 let sounding = 0;
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -441,8 +442,10 @@ function disarm(): void {
 }
 
 function onGesture(): void {
+  // a play while disabled never arms, so nothing waits on this one
+  if (!enabled) return disarm();
   // a swipe's touchend grants no activation: keep waiting
-  if (!enabled || !hasBeenActive()) return;
+  if (!hasBeenActive()) return;
   const context = getAudioContext();
   if (!context) disarm();
   else if (context.state === "running" && !suspending) disarm();

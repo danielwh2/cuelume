@@ -13,7 +13,7 @@
  * Deprecated, kept for the v0.3 migration window and removed in 1.0:
  *
  *   data-cuelume-hover     → pointerenter (fine mouse that has moved since the last click,
- *                            key or scroll, throttled), plays `select`
+ *                            Enter, Space or scroll, throttled), plays `select`
  *   data-cuelume-press     → pointerdown, plays `tap`
  *   data-cuelume-release   → pointerup, plays `tap` unless the element also has press
  *
@@ -37,6 +37,7 @@ import type { ThemeName } from "../sounds/themes.js";
 const HOVER_GAP_MS = 150;
 /** Hand jitter during a click moves less than this. */
 const HOVER_REARM_PX = 4;
+const ACTIVATING_KEYS: ReadonlySet<string> = new Set(["Enter", " "]);
 const TYPE_GAP_MS = 40;
 /** Chrome reports keydowns that belong to an IME composition with this code. */
 const IME_KEY_CODE = 229;
@@ -238,7 +239,8 @@ export function bind(root?: ParentNode): void {
   });
 
   listen(scope, "keydown", (event) => {
-    disarmHover();
+    // the keys that activate a link or button; scrolling keys disarm through scroll
+    if (ACTIVATING_KEYS.has((event as KeyboardEvent).key)) disarmHover();
     const found = match(scope, event, "data-cuelume-type", "type");
     if (!found || found[0] !== event.target) return null;
     const key = event as KeyboardEvent;
