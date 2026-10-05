@@ -252,7 +252,7 @@ Cuelume does not follow `prefers-reduced-motion`. That setting is about motion. 
 ## API
 
 ```ts
-import { play, bind, setEnabled, setVolume, setTheme, sounds, themes, type SoundName, type Emphasis, type ThemeName, type PlayOptions } from "cuelume";
+import { play, warm, bind, setEnabled, setVolume, setTheme, sounds, themes, type SoundName, type Emphasis, type ThemeName, type PlayOptions } from "cuelume";
 ```
 
 - **`play(name?: SoundName, options?: PlayOptions)`**: play a cue immediately. Defaults to `"tap"`. Options apply to this play only:
@@ -263,8 +263,9 @@ import { play, bind, setEnabled, setVolume, setTheme, sounds, themes, type Sound
   - `input?: "mouse" | "touch" | "pen" | "keyboard"`: shapes `tap`.
   - `theme?: ThemeName`: the material for this play only.
   - `duration?: number`: how long a `count` runs, in milliseconds, clamped to `300–2000`.
+- **`warm()`**: get audio ready without a sound. Call it from your own first `pointerdown` or `keydown` handler to take the setup cost off the first cue; it is a no-op while disabled.
 - **`bind(root?: ParentNode)`**: delegate all `data-cuelume-*` interactions under `root` (defaults to the whole document). Idempotent, and handles elements added later.
-- **`setEnabled(enabled: boolean)`**: enable or disable future playback. Does not persist the preference or stop sounds already playing.
+- **`setEnabled(enabled: boolean)`**: enable or disable future playback. Does not persist the preference or stop sounds already playing; once they end, audio is suspended.
 - **`setVolume(volume: number)`**: set the global volume for future playback, clamped to `0–1`. Non-finite values are ignored and preferences are not persisted.
 - **`setTheme(theme: ThemeName)`**: switch the material of future playback. Unknown names are ignored; the choice isn't persisted.
 - **`themes`**: the built-in theme names, `["default", "mech", "bubble", "press"]`.
@@ -293,7 +294,7 @@ The old bindings also keep working until 1.0:
 
 | 0.2 binding            | In 0.3                                                                                  |
 | ---------------------- | --------------------------------------------------------------------------------------- |
-| `data-cuelume-hover`   | Plays `select` on hover. Hover is no longer a built-in binding; call `play()` from your own handler if you want it. |
+| `data-cuelume-hover`   | Plays `select` on hover, and stays quiet after a click, Enter, Space or scroll until the mouse moves, so SPA navigations don't chirp (under `bind(root)`, only those inside `root`). Hover is no longer a built-in binding; call `play()` from your own handler if you want it. |
 | `data-cuelume-press`   | Plays `tap` on pointer down. Use `data-cuelume-tap`.                                    |
 | `data-cuelume-release` | Plays `tap` on pointer up, unless the element also has `data-cuelume-press`, so an old press/release pair plays one `tap`. |
 
@@ -304,8 +305,9 @@ The old bindings also keep working until 1.0:
 - **Audible without clipping.** One shared boosted output stage keeps sounds clear, with native compression protecting overlapping cues.
 - **Struck, not played back.** Tones are modelled on real bars: each overtone dies faster the higher it is, and a brief mallet contact starts the note. Every play of a frequent cue is one strike, a little harder or softer than the last, so a harder one is louder and brighter together and no two sound identical. Outcome cues play the same every time, so their meaning never blurs.
 - **One faint room.** Every cue rings very faintly into one shared, short stereo room (about 22 dB down), which places it in the space around the listener rather than inside their head. `success` and `ready` ring into it a little more.
-- **One lazy `AudioContext`.** Shared across all sounds, created on first use.
+- **One lazy `AudioContext`.** Shared across all sounds, created on first use and suspended when idle, so it doesn't hold the audio device open. If the browser closes it, the next cue starts a fresh one.
 - **Autoplay-friendly.** Attempts to resume suspended audio without surfacing errors when a browser blocks it.
+- **Starts on the first tap that counts.** When a browser blocks a cue (before the page's first tap, or off a gesture's call stack), Cuelume listens for the next tap, click or key and starts audio there. The blocked cue is dropped rather than played late.
 - **SSR-safe.** Importing on the server is a no-op.
 - **Safe fallback.** Invalid runtime names and unavailable or blocked Web Audio make `play()` a silent no-op. An invalid attribute value plays that binding's default cue.
 - **Dynamic, idempotent binding.** `bind()` never double-attaches listeners, and later DOM additions, removals, and clones work automatically.

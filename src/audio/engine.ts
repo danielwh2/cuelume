@@ -35,8 +35,15 @@ import {
 import { THEMES, isThemeName, type ThemeName } from "../sounds/themes.js";
 
 const SOURCE_STOP_PADDING = 0.05;
-const CLEANUP_MARGIN = 0.05;
 const OUTPUT_GAIN = 4;
+/**
+ * Every play starts this far ahead of the context's clock. A cold renderer
+ * can let a source scheduled for "now" slip past, and a short cue then
+ * plays nothing at all.
+ */
+const PLAYBACK_LEAD = 0.01;
+/** A suspended context never ends its sources, so a play is let go this long after it should have finished. */
+const CLEANUP_FALLBACK = 1;
 
 /** Holds `param` at `from`, then glides it toward the layer's `glideTo`, if any. */
 function glide(param: AudioParam, from: number, layer: SoundLayer, startTime: number): void {
@@ -57,7 +64,7 @@ function renderTone(
   destination: AudioNode,
   layer: ToneLayer,
   startTime: number,
-): void {
+): AudioScheduledSourceNode {
   const oscillator = context.createOscillator();
   oscillator.type = layer.waveform;
   glide(oscillator.frequency, layer.frequency, layer, startTime);
@@ -69,6 +76,7 @@ function renderTone(
   oscillator.connect(gain).connect(destination);
   oscillator.start(startTime);
   oscillator.stop(startTime + layer.attack + layer.decay + SOURCE_STOP_PADDING);
+  return oscillator;
 }
 
 function renderNoise(
@@ -76,7 +84,7 @@ function renderNoise(
   destination: AudioNode,
   layer: NoiseLayer,
   startTime: number,
-): void {
+): AudioScheduledSourceNode {
   const duration = layer.attack + layer.decay + SOURCE_STOP_PADDING;
   const source = context.createBufferSource();
   source.buffer = getNoise(context);
@@ -94,6 +102,7 @@ function renderNoise(
   // a different stretch of the same noise every time
   source.start(startTime, Math.random() * NOISE_SECONDS);
   source.stop(startTime + duration);
+  return source;
 }
 
 function sourceEnd(layers: SoundLayer[]): number {
@@ -250,6 +259,8 @@ function renderRecipe(
   emphasis: Emphasis,
   shape: Shape,
 ): void {
+  clearTimeout(idleTimer);
+  sounding++;
   const now = context.currentTime;
   const output = getOutput(context);
   const master = context.createGain();
@@ -269,19 +280,63 @@ function renderRecipe(
   const { vary } = recipe;
   const strike = vary ? { pitch: nudge(vary.pitch), force: nudge(vary.level) } : STEADY_STRIKE;
   const layers = arrangement(recipe.layers, emphasis).map((layer) => shaped(layer, shape, strike, vary));
-  for (const layer of layers) {
-    const startTime = now + (layer.offset ?? 0);
-    if (layer.kind === "tone") renderTone(context, master, layer, startTime);
-    else renderNoise(context, master, layer, startTime);
-  }
+  const sources = layers.map((layer) => {
+    const startTime = now + PLAYBACK_LEAD + (layer.offset ?? 0);
+    return layer.kind === "tone"
+      ? renderTone(context, master, layer, startTime)
+      : renderNoise(context, master, layer, startTime);
+  });
 
   // the room rings on by itself once the last source has fed it
-  const cleanupAfterMs = (sourceEnd(layers) + CLEANUP_MARGIN) * 1000;
-  setTimeout(() => {
+  let finished = false;
+  const cleanup = () => {
+    if (finished) return;
+    finished = true;
     if (voices.get(sound) === master) voices.delete(sound);
     master.disconnect();
     send.disconnect();
-  }, cleanupAfterMs);
+    if (context === sharedContext && --sounding === 0) idleSoon(context);
+  };
+  let playing = sources.length;
+  for (const source of sources) {
+    source.onended = () => {
+      if (--playing === 0) cleanup();
+    };
+  }
+  setTimeout(cleanup, (PLAYBACK_LEAD + sourceEnd(layers) + CLEANUP_FALLBACK) * 1000);
+}
+
+/**
+ * How long the context sits idle before it is suspended. Safari otherwise
+ * holds the audio device open at its smallest buffer for as long as the
+ * page lives, and other apps' audio can glitch. Resuming can reopen the
+ * device, which costs the next cue time and can swallow its start, so this
+ * is long enough that a page in use stays awake between clicks; the next
+ * play after it resumes the context.
+ */
+const IDLE_SUSPEND_MS = 10_000;
+/** Plays not yet let go. */
+let sounding = 0;
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
+/** A suspend in flight: the context still reads "running" but is about to stop. */
+let suspending = false;
+
+function idleSoon(context: AudioContext): void {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => suspend(context), IDLE_SUSPEND_MS);
+}
+
+function suspend(context: AudioContext): void {
+  if (context.state !== "running" || typeof context.suspend !== "function") return;
+  suspending = true;
+  const settled = () => {
+    if (context === sharedContext) suspending = false;
+  };
+  try {
+    void context.suspend().then(settled, settled);
+  } catch {
+    settled();
+  }
 }
 
 let sharedContext: AudioContext | null = null;
@@ -298,6 +353,8 @@ function normalizeVolume(value: unknown, fallback: number): number {
 /** Enables or disables future playback. Preference storage stays with the app. */
 export function setEnabled(value: boolean): void {
   if (typeof value === "boolean") enabled = value;
+  // nothing left to finish, so let go of the device now
+  if (!enabled && sharedContext && sounding === 0) suspend(sharedContext);
 }
 
 /**
@@ -313,12 +370,34 @@ export function setVolume(value: number): void {
   globalVolume = normalizeVolume(value, globalVolume);
 }
 
-function getAudioContext(): AudioContext | null {
-  if (sharedContext) return sharedContext;
-  if (typeof window === "undefined") return null;
-  const Ctor =
+function audioContextClass(): typeof AudioContext | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (
     window.AudioContext ??
-    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  );
+}
+
+/**
+ * Drops the shared context and everything built on it. A closed context never
+ * plays again; Safari can leave one behind after the screen locks, and only
+ * a fresh one brings sound back without a reload.
+ */
+function forget(): void {
+  sharedContext = null;
+  sharedOutput = null;
+  sharedRoom = null;
+  sharedNoise = null;
+  voices.clear();
+  sounding = 0;
+  clearTimeout(idleTimer);
+  suspending = false;
+}
+
+function getAudioContext(): AudioContext | null {
+  if (sharedContext?.state === "closed") forget();
+  if (sharedContext) return sharedContext;
+  const Ctor = audioContextClass();
   if (!Ctor) return null;
   try {
     sharedContext = new Ctor();
@@ -326,6 +405,68 @@ function getAudioContext(): AudioContext | null {
     return null;
   }
   return sharedContext;
+}
+
+function hasBeenActive(): boolean {
+  return typeof navigator === "undefined" || navigator.userActivation?.hasBeenActive !== false;
+}
+
+/** The events browsers count as activation; audio can start on their call stack. */
+const GESTURES = ["touchend", "click", "keydown", "mousedown"] as const;
+/**
+ * A cue still waiting on the context this long after it was asked for is
+ * dropped: it belongs to the moment that asked for it, and a backlog let out
+ * by a later tap would burst out all at once.
+ */
+const STALE_CUE_MS = 1000;
+let armed = false;
+
+/**
+ * Starts audio on the next gesture that counts. A play the browser blocks,
+ * before the page's first activation (on iOS a swipe grants none) or off a
+ * gesture's call stack (where resume() stays pending), would otherwise leave
+ * every later play silent too. Listening in the capture phase on window
+ * means an element that stops propagation can't starve it.
+ */
+function arm(): void {
+  if (armed || !audioContextClass()) return;
+  if (typeof window.addEventListener !== "function" || typeof window.removeEventListener !== "function") return;
+  armed = true;
+  for (const type of GESTURES) window.addEventListener(type, onGesture, { capture: true, passive: true });
+}
+
+function disarm(): void {
+  if (!armed) return;
+  armed = false;
+  for (const type of GESTURES) window.removeEventListener(type, onGesture, true);
+}
+
+function onGesture(): void {
+  // a play while disabled never arms, so nothing waits on this one
+  if (!enabled) return disarm();
+  // a swipe's touchend grants no activation: keep waiting
+  if (!hasBeenActive()) return;
+  const context = getAudioContext();
+  if (!context) disarm();
+  else if (context.state === "running" && !suspending) disarm();
+  else resume(context);
+}
+
+/** Resumes `context` without surfacing a refusal; `then` runs once it is running. */
+function resume(context: AudioContext, then?: () => void): void {
+  try {
+    void context.resume().then(
+      () => {
+        if (context.state !== "running") return;
+        disarm();
+        then?.();
+        if (sounding === 0) idleSoon(context);
+      },
+      () => {},
+    );
+  } catch {
+    // Some browsers throw synchronously when audio is blocked.
+  }
 }
 
 export type PlayOptions = {
@@ -357,9 +498,9 @@ function sinceLastPlay(sound: SoundName): number {
 
 /**
  * Plays a sound immediately. Safe to call from anywhere — lazily creates
- * the shared `AudioContext` on first use, resumes it if the browser
- * started it suspended (e.g. before any user gesture), and is a no-op
- * when Web Audio is unavailable (SSR, old browsers).
+ * the shared `AudioContext` on first use, resumes it if it is suspended
+ * (by the browser before any user gesture, or by Cuelume when idle), and is
+ * a no-op when Web Audio is unavailable (SSR, old browsers).
  */
 export function play(sound?: SoundName, options?: PlayOptions): void;
 /** @deprecated Renamed in v0.3 and removed in 1.0. See the migration table in the README. */
@@ -372,7 +513,11 @@ export function play(sound: SoundName | LegacySoundName = "tap", options?: PlayO
 export function playInContext(sound: unknown, options: PlayOptions | undefined, interaction: Context): void {
   const name = resolveSound(sound);
   if (!enabled || !name) return;
-  if (typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive === false) return;
+  // blocked: this cue is dropped, but audio starts on the next tap that counts
+  if (!hasBeenActive()) {
+    arm();
+    return;
+  }
 
   const playVolume = globalVolume * normalizeVolume(options?.volume, 1);
   if (playVolume === 0) return;
@@ -384,18 +529,45 @@ export function playInContext(sound: unknown, options: PlayOptions | undefined, 
   const recipe: SoundRecipe = THEMES[isThemeName(requested) ? requested : activeTheme][name];
   const emphasis = resolveEmphasis(options?.emphasis);
   const shape = shapeFor(name, interaction, emphasis, sinceLastPlay(name));
-  if (context.state === "running") {
+  // a context about to suspend is resumed first, not rendered into
+  if (context.state === "running" && !suspending) {
     renderRecipe(context, name, recipe, playVolume, emphasis, shape);
   } else {
-    try {
-      void context.resume().then(
-        () => {
-          if (enabled && context.state === "running") renderRecipe(context, name, recipe, playVolume, emphasis, shape);
-        },
-        () => {},
-      );
-    } catch {
-      // Some browsers throw synchronously when audio is blocked.
-    }
+    const askedAt = performance.now();
+    resume(context, () => {
+      if (enabled && performance.now() - askedAt <= STALE_CUE_MS) {
+        renderRecipe(context, name, recipe, playVolume, emphasis, shape);
+      }
+    });
+    arm();
+  }
+}
+
+/**
+ * Gets audio ready without a sound: creates the shared context, builds its
+ * output and room, and resumes it, so the first cue doesn't pay for the
+ * setup. Call it from your own first pointerdown or keydown. Behind the same
+ * gates as `play`; never throws.
+ */
+export function warm(): void {
+  if (!enabled) return;
+  if (!hasBeenActive()) {
+    arm();
+    return;
+  }
+  const context = getAudioContext();
+  if (!context) return;
+  try {
+    getOutput(context);
+    getNoise(context);
+  } catch {
+    return;
+  }
+  if (context.state === "running" && !suspending) {
+    // nothing is playing yet, so don't hold the device open
+    if (sounding === 0) idleSoon(context);
+  } else {
+    resume(context);
+    arm();
   }
 }
