@@ -18,5 +18,5 @@ export type { PlayOptions } from "./audio/engine.js";
 export type { ThemeName } from "./sounds/themes.js";
 export { themes } from "./sounds/themes.js";
 export { sounds } from "./sounds/recipes.js";
-export { play, setEnabled, setTheme, setVolume } from "./audio/engine.js";
+export { play, setEnabled, setTheme, setVolume, warm } from "./audio/engine.js";
 export { bind } from "./interactions/bind.js";

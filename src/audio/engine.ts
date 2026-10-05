@@ -369,12 +369,17 @@ export function setVolume(value: number): void {
   globalVolume = normalizeVolume(value, globalVolume);
 }
 
+function audioContextClass(): typeof AudioContext | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  );
+}
+
 function getAudioContext(): AudioContext | null {
   if (sharedContext) return sharedContext;
-  if (typeof window === "undefined") return null;
-  const Ctor =
-    window.AudioContext ??
-    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  const Ctor = audioContextClass();
   if (!Ctor) return null;
   try {
     sharedContext = new Ctor();
@@ -382,6 +387,66 @@ function getAudioContext(): AudioContext | null {
     return null;
   }
   return sharedContext;
+}
+
+function hasBeenActive(): boolean {
+  return typeof navigator === "undefined" || navigator.userActivation?.hasBeenActive !== false;
+}
+
+/** The events browsers count as activation; audio can start on their call stack. */
+const GESTURES = ["touchend", "click", "keydown", "mousedown"] as const;
+/**
+ * A cue still waiting on the context this long after it was asked for is
+ * dropped: it belongs to the moment that asked for it, and a backlog let out
+ * by a later tap would burst out all at once.
+ */
+const STALE_CUE_MS = 1000;
+let armed = false;
+
+/**
+ * Starts audio on the next gesture that counts. A play the browser blocks,
+ * before the page's first activation (on iOS a swipe grants none) or off a
+ * gesture's call stack (where resume() stays pending), would otherwise leave
+ * every later play silent too. Listening in the capture phase on window
+ * means an element that stops propagation can't starve it.
+ */
+function arm(): void {
+  if (armed || !audioContextClass()) return;
+  if (typeof window.addEventListener !== "function" || typeof window.removeEventListener !== "function") return;
+  armed = true;
+  for (const type of GESTURES) window.addEventListener(type, onGesture, { capture: true, passive: true });
+}
+
+function disarm(): void {
+  if (!armed) return;
+  armed = false;
+  for (const type of GESTURES) window.removeEventListener(type, onGesture, true);
+}
+
+function onGesture(): void {
+  // a swipe's touchend grants no activation: keep waiting
+  if (!enabled || !hasBeenActive()) return;
+  const context = getAudioContext();
+  if (!context) disarm();
+  else if (context.state === "running" && !suspending) disarm();
+  else resume(context);
+}
+
+/** Resumes `context` without surfacing a refusal; `then` runs once it is running. */
+function resume(context: AudioContext, then?: () => void): void {
+  try {
+    void context.resume().then(
+      () => {
+        if (context.state !== "running") return;
+        disarm();
+        then?.();
+        if (sounding === 0) idleSoon(context);
+      },
+      () => {},
+    );
+  } catch {
+    // Some browsers throw synchronously when audio is blocked.
+  }
 }
 
 export type PlayOptions = {
@@ -428,7 +493,11 @@ export function play(sound: SoundName | LegacySoundName = "tap", options?: PlayO
 export function playInContext(sound: unknown, options: PlayOptions | undefined, interaction: Context): void {
   const name = resolveSound(sound);
   if (!enabled || !name) return;
-  if (typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive === false) return;
+  // blocked: this cue is dropped, but audio starts on the next tap that counts
+  if (!hasBeenActive()) {
+    arm();
+    return;
+  }
 
   const playVolume = globalVolume * normalizeVolume(options?.volume, 1);
   if (playVolume === 0) return;
@@ -444,17 +513,41 @@ export function playInContext(sound: unknown, options: PlayOptions | undefined, 
   if (context.state === "running" && !suspending) {
     renderRecipe(context, name, recipe, playVolume, emphasis, shape);
   } else {
-    try {
-      void context.resume().then(
-        () => {
-          if (context.state !== "running") return;
-          if (enabled) renderRecipe(context, name, recipe, playVolume, emphasis, shape);
-          else if (sounding === 0) idleSoon(context);
-        },
-        () => {},
-      );
-    } catch {
-      // Some browsers throw synchronously when audio is blocked.
-    }
+    const askedAt = performance.now();
+    resume(context, () => {
+      if (enabled && performance.now() - askedAt <= STALE_CUE_MS) {
+        renderRecipe(context, name, recipe, playVolume, emphasis, shape);
+      }
+    });
+    arm();
+  }
+}
+
+/**
+ * Gets audio ready without a sound: creates the shared context, builds its
+ * output and room, and resumes it, so the first cue doesn't pay for the
+ * setup. Call it from your own first pointerdown or keydown. Behind the same
+ * gates as `play`; never throws.
+ */
+export function warm(): void {
+  if (!enabled) return;
+  if (!hasBeenActive()) {
+    arm();
+    return;
+  }
+  const context = getAudioContext();
+  if (!context) return;
+  try {
+    getOutput(context);
+    getNoise(context);
+  } catch {
+    return;
+  }
+  if (context.state === "running" && !suspending) {
+    // nothing is playing yet, so don't hold the device open
+    if (sounding === 0) idleSoon(context);
+  } else {
+    resume(context);
+    arm();
   }
 }

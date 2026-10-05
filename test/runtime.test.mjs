@@ -1625,3 +1625,183 @@ test("a refused or missing suspend and a refused resume stay silent", async (con
   assert.doesNotThrow(() => timers.tick(1000));
   assert.doesNotThrow(() => old.setEnabled(false));
 });
+
+// A window that keeps its listeners, so a test can fire a gesture at them.
+function listeningWindow(AudioContext) {
+  const listeners = [];
+  return {
+    ...(AudioContext ? { AudioContext } : {}),
+    listeners,
+    addEventListener(type, listener, options) {
+      listeners.push({ type, listener, options });
+    },
+    removeEventListener(type, listener, capture) {
+      const at = listeners.findIndex((entry) => entry.type === type && entry.listener === listener && capture === true);
+      if (at >= 0) listeners.splice(at, 1);
+    },
+    emit(type) {
+      for (const { listener } of listeners.filter((entry) => entry.type === type)) listener({ type });
+    },
+  };
+}
+
+const GESTURES = ["click", "keydown", "mousedown", "touchend"];
+const listening = (win) => win.listeners.map((entry) => entry.type).sort();
+
+test("a play blocked before activation starts audio on the first tap that counts", async (context) => {
+  context.after(restoreGlobals);
+  const { Suspendable, log, made } = suspendableContext();
+  class Blocked extends Suspendable {
+    state = "suspended";
+  }
+  const timers = manualTimers();
+  const userActivation = { hasBeenActive: false };
+  const win = listeningWindow(Blocked);
+  setGlobal("navigator", { userActivation });
+  setGlobal("window", win);
+  const { play, setEnabled } = await import(`../dist/audio/engine.js?gesture=${Date.now()}`);
+
+  // a swipe's cue: no context yet, and one passive capture listener per gesture
+  play("navigate");
+  play("navigate");
+  assert.equal(made.length, 0);
+  assert.deepEqual(listening(win), GESTURES);
+  assert.ok(win.listeners.every(({ options }) => options.capture === true && options.passive === true));
+
+  // the swipe's own touchend grants nothing on iOS: keep waiting
+  win.emit("touchend");
+  assert.equal(made.length, 0);
+
+  // switched off, a tap starts nothing
+  userActivation.hasBeenActive = true;
+  setEnabled(false);
+  win.emit("click");
+  assert.equal(made.length, 0);
+  setEnabled(true);
+
+  // a tap anywhere does, even one with no cue of its own; the blocked cue stays dropped
+  win.emit("touchend");
+  const ctx = made[0];
+  assert.deepEqual(ctx.calls, ["resume"]);
+  ctx.settle();
+  await flush();
+  assert.equal(ctx.state, "running");
+  assert.deepEqual(win.listeners, []);
+  assert.equal(log.sources.length, 0);
+  // started without a cue, it still lets go of the device
+  timers.tick(1000);
+  assert.deepEqual(ctx.calls, ["resume", "suspend"]);
+});
+
+test("a resume left pending is retried on the next gesture, and only a recent cue plays", async (context) => {
+  context.after(restoreGlobals);
+  const { Suspendable, log, made } = suspendableContext();
+  class OffGesture extends Suspendable {
+    state = "suspended";
+  }
+  manualTimers();
+  let now = 10_000;
+  const win = listeningWindow(OffGesture);
+  setGlobal("performance", { now: () => now });
+  setGlobal("navigator", { userActivation: { hasBeenActive: true } });
+  setGlobal("window", win);
+  const { play } = await import(`../dist/audio/engine.js?pending=${Date.now()}`);
+  const { THEMES } = await import("../dist/sounds/themes.js");
+  const { arrangement } = await import("../dist/sounds/context.js");
+
+  // played off a gesture's stack (after an await, a drag library's callback): resume stays pending
+  play("tap");
+  const ctx = made[0];
+  assert.deepEqual(listening(win), GESTURES);
+  now += 1_001;
+  play("success");
+  assert.deepEqual(listening(win), GESTURES, "armed once");
+
+  // the next gesture resumes on its own stack; the browser settles every pending resume
+  win.emit("click");
+  assert.deepEqual(ctx.calls, ["resume", "resume", "resume"]);
+  now += 500;
+  ctx.settle();
+  await flush();
+  // tap waited 1.5 s and is dropped; success waited 0.5 s and plays
+  assert.equal(log.sources.length, arrangement(THEMES.default.success.layers, "normal").length);
+  assert.deepEqual(win.listeners, []);
+
+  // running now: a play renders straight away and arms nothing
+  play("tap");
+  assert.ok(log.sources.length > arrangement(THEMES.default.success.layers, "normal").length);
+  assert.deepEqual(win.listeners, []);
+});
+
+test("without Web Audio, or a window that can't listen, nothing is armed", async (context) => {
+  context.after(restoreGlobals);
+  const win = listeningWindow(undefined);
+  setGlobal("navigator", { userActivation: { hasBeenActive: false } });
+  setGlobal("window", win);
+  const bare = await import(`../dist/audio/engine.js?bare=${Date.now()}`);
+  bare.play("tap");
+  bare.warm();
+  assert.deepEqual(win.listeners, []);
+
+  const { Suspendable } = suspendableContext();
+  setGlobal("window", { AudioContext: Suspendable, addEventListener() {} });
+  const deaf = await import(`../dist/audio/engine.js?deaf=${Date.now()}`);
+  assert.doesNotThrow(() => deaf.play("tap"));
+  assert.doesNotThrow(() => deaf.warm());
+});
+
+test("warm builds the shared graph and starts the context without a sound", async (context) => {
+  context.after(restoreGlobals);
+  const { Suspendable, log, made } = suspendableContext();
+  let compressors = 0;
+  class Cold extends Suspendable {
+    state = "suspended";
+    createDynamicsCompressor() {
+      compressors++;
+      return super.createDynamicsCompressor();
+    }
+  }
+  const timers = manualTimers();
+  const userActivation = { hasBeenActive: false };
+  const win = listeningWindow(Cold);
+  setGlobal("window", undefined);
+  const { warm, setEnabled, play } = await import(`../dist/audio/engine.js?warm=${Date.now()}`);
+  assert.doesNotThrow(() => warm(), "no window: nothing to do");
+
+  setGlobal("navigator", { userActivation });
+  setGlobal("window", win);
+  setEnabled(false);
+  warm();
+  setEnabled(true);
+  assert.equal(made.length, 0, "switched off");
+  assert.deepEqual(win.listeners, []);
+  warm();
+  assert.equal(made.length, 0, "before activation");
+
+  userActivation.hasBeenActive = true;
+  warm();
+  warm();
+  const ctx = made[0];
+  assert.equal(made.length, 1);
+  assert.equal(compressors, 1, "the output and room are built once");
+  assert.equal(log.sources.length, 0, "no source is started");
+  assert.deepEqual(ctx.calls, ["resume", "resume"]);
+  ctx.settle();
+  await flush();
+  assert.deepEqual(win.listeners, []);
+
+  // running and idle: warm doesn't hold the device open
+  warm();
+  assert.equal(ctx.calls.length, 2);
+  timers.tick(1000);
+  assert.deepEqual(ctx.calls, ["resume", "resume", "suspend"]);
+  ctx.settle();
+  await flush();
+
+  // the first cue after it renders on the graph warm built
+  play("tap");
+  ctx.settle();
+  await flush();
+  assert.ok(log.sources.length > 0);
+  assert.equal(compressors, 1);
+});
