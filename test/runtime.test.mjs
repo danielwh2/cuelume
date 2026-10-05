@@ -104,6 +104,8 @@ function recordingContext() {
 // How far one play can move a layer's pitch or filter from its recipe: the strike's pitch, and for
 // noise the strike's force too (a harder strike is brighter), or for a tone a little mode jitter.
 const MODE_JITTER = 0.005;
+// Every play starts this far ahead of the context's clock.
+const PLAYBACK_LEAD = 0.01;
 const spread = (layer, vary) =>
   vary ? (1 + vary.pitch) * (1 + (layer.kind === "noise" ? vary.level : MODE_JITTER)) - 1 : 0;
 
@@ -371,7 +373,7 @@ test("count follows its duration and falls going back, in every theme and emphas
     layers.forEach((layer, i) => {
       const offset = layer.offset ?? 0;
       const [s, l] = [short.sources[i], long.sources[i]];
-      assert.ok(near(s.at, (offset * 300) / 800) && near(l.at, (offset * 2000) / 800), `${theme} layer ${i} starts in step`);
+      assert.ok(near(s.at - PLAYBACK_LEAD, (offset * 300) / 800) && near(l.at - PLAYBACK_LEAD, (offset * 2000) / 800), `${theme} layer ${i} starts in step`);
       // a stretch layer's sound and glide both last in proportion; everything else keeps its length
       const scale = layer.stretch ? 2000 / 300 : 1;
       assert.ok(near(l.end - l.at - 0.05, (s.end - s.at - 0.05) * scale), `${theme} layer ${i} length`);
@@ -480,6 +482,48 @@ test("a cue plays one voice at a time: a new play releases the last, other cues 
   assert.equal(other.gain.ramps.length, 0);
 });
 
+test("every layer starts a little ahead, and a play whose sources never end is still let go", async (context) => {
+  context.after(restoreGlobals);
+  const { Context, log } = recordingContext();
+  const timers = [];
+  const masters = [];
+  class Recording extends Context {
+    currentTime = 5;
+    createGain() {
+      const gain = Object.assign(super.createGain(), {
+        disconnect() {
+          gain.disconnects = (gain.disconnects ?? 0) + 1;
+        },
+      });
+      masters.push(gain);
+      return gain;
+    }
+  }
+  setGlobal("setTimeout", (callback, delay) => {
+    timers.push({ callback, delay });
+    return 0;
+  });
+  setGlobal("window", { AudioContext: Recording });
+  const { play } = await import(`../dist/audio/engine.js?lead=${Date.now()}`);
+  const { THEMES } = await import("../dist/sounds/themes.js");
+
+  play("tap");
+  // a cold renderer can drop a source scheduled for "now", so nothing is
+  assert.ok(log.sources.length > 0 && log.sources.every((source) => source.at === 5 + PLAYBACK_LEAD));
+  const master = masters.find((gain) => gain.gain.value === THEMES.default.tap.masterGain);
+
+  // a suspended context never ends its sources: the timer lets the play go once, and a late end changes nothing
+  assert.equal(timers.length, 1);
+  timers[0].callback();
+  assert.equal(master.disconnects, 1);
+  for (const source of log.sources) source.onended();
+  timers[0].callback();
+  assert.equal(master.disconnects, 1);
+  // it is no longer tap's voice, so the next tap has nothing to release
+  play("tap");
+  assert.equal(master.gain.ramps.length, 0);
+});
+
 test("one strike per play: every layer shares it, harder is louder and brighter, and only cues with vary move", async (context) => {
   context.after(restoreGlobals);
   const { Context, log } = recordingContext();
@@ -508,7 +552,7 @@ test("one strike per play: every layer shares it, harder is louder and brighter,
       layer,
       level: layerGains[i].gain.swell / layer.peak,
       pitch: pitched[i].value / (layer.kind === "tone" ? layer.frequency : layer.filterFrequency),
-      ring: (layerGains[i].gain.rampTimes[0] - layer.attack) / layer.decay,
+      ring: (layerGains[i].gain.rampTimes[0] - PLAYBACK_LEAD - layer.attack) / layer.decay,
     }));
   };
   const near = (a, b) => Math.abs(a - b) < 1e-9;
@@ -1365,10 +1409,16 @@ test("every play rings into one shared room, and a finished play lets go of it",
   }
   assert.notDeepEqual(impulse[0], impulse[1]);
 
-  // one cleanup, when the last layer has finished; the room itself stays up for the next play
+  // one cleanup, when the last of its sources has ended; the room itself stays up for the next play
+  const sources = made.filter((n) => n.name === "oscillator" || n.name === "noise");
+  for (const source of sources.slice(1)) source.onended();
+  assert.deepEqual(disconnected, []);
+  sources[0].onended();
+  assert.deepEqual(disconnected, ["master", "send"]);
+  // the timer kept for a context that never ends its sources finds nothing left to do
   assert.equal(timers.length, 1);
   const longest = Math.max(...RECIPES.success.layers.filter((l) => l.from !== "strong").map((l) => l.attack + l.decay));
-  assert.equal(Math.round(timers[0].delay), Math.round((longest + 0.1) * 1000));
+  assert.equal(Math.round(timers[0].delay), Math.round((PLAYBACK_LEAD + longest + 0.05 + 1) * 1000));
   timers[0].callback();
   assert.deepEqual(disconnected, ["master", "send"]);
 

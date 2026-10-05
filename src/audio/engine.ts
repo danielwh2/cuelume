@@ -35,8 +35,15 @@ import {
 import { THEMES, isThemeName, type ThemeName } from "../sounds/themes.js";
 
 const SOURCE_STOP_PADDING = 0.05;
-const CLEANUP_MARGIN = 0.05;
 const OUTPUT_GAIN = 4;
+/**
+ * Every play starts this far ahead of the context's clock. A cold renderer
+ * can let a source scheduled for "now" slip past, and a short cue then
+ * plays nothing at all.
+ */
+const PLAYBACK_LEAD = 0.01;
+/** A suspended context never ends its sources, so a play is let go this long after it should have finished. */
+const CLEANUP_FALLBACK = 1;
 
 /** Holds `param` at `from`, then glides it toward the layer's `glideTo`, if any. */
 function glide(param: AudioParam, from: number, layer: SoundLayer, startTime: number): void {
@@ -57,7 +64,7 @@ function renderTone(
   destination: AudioNode,
   layer: ToneLayer,
   startTime: number,
-): void {
+): AudioScheduledSourceNode {
   const oscillator = context.createOscillator();
   oscillator.type = layer.waveform;
   glide(oscillator.frequency, layer.frequency, layer, startTime);
@@ -69,6 +76,7 @@ function renderTone(
   oscillator.connect(gain).connect(destination);
   oscillator.start(startTime);
   oscillator.stop(startTime + layer.attack + layer.decay + SOURCE_STOP_PADDING);
+  return oscillator;
 }
 
 function renderNoise(
@@ -76,7 +84,7 @@ function renderNoise(
   destination: AudioNode,
   layer: NoiseLayer,
   startTime: number,
-): void {
+): AudioScheduledSourceNode {
   const duration = layer.attack + layer.decay + SOURCE_STOP_PADDING;
   const source = context.createBufferSource();
   source.buffer = getNoise(context);
@@ -94,6 +102,7 @@ function renderNoise(
   // a different stretch of the same noise every time
   source.start(startTime, Math.random() * NOISE_SECONDS);
   source.stop(startTime + duration);
+  return source;
 }
 
 function sourceEnd(layers: SoundLayer[]): number {
@@ -269,19 +278,29 @@ function renderRecipe(
   const { vary } = recipe;
   const strike = vary ? { pitch: nudge(vary.pitch), force: nudge(vary.level) } : STEADY_STRIKE;
   const layers = arrangement(recipe.layers, emphasis).map((layer) => shaped(layer, shape, strike, vary));
-  for (const layer of layers) {
-    const startTime = now + (layer.offset ?? 0);
-    if (layer.kind === "tone") renderTone(context, master, layer, startTime);
-    else renderNoise(context, master, layer, startTime);
-  }
+  const sources = layers.map((layer) => {
+    const startTime = now + PLAYBACK_LEAD + (layer.offset ?? 0);
+    return layer.kind === "tone"
+      ? renderTone(context, master, layer, startTime)
+      : renderNoise(context, master, layer, startTime);
+  });
 
   // the room rings on by itself once the last source has fed it
-  const cleanupAfterMs = (sourceEnd(layers) + CLEANUP_MARGIN) * 1000;
-  setTimeout(() => {
+  let finished = false;
+  const cleanup = () => {
+    if (finished) return;
+    finished = true;
     if (voices.get(sound) === master) voices.delete(sound);
     master.disconnect();
     send.disconnect();
-  }, cleanupAfterMs);
+  };
+  let playing = sources.length;
+  for (const source of sources) {
+    source.onended = () => {
+      if (--playing === 0) cleanup();
+    };
+  }
+  setTimeout(cleanup, (PLAYBACK_LEAD + sourceEnd(layers) + CLEANUP_FALLBACK) * 1000);
 }
 
 let sharedContext: AudioContext | null = null;
