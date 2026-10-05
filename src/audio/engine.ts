@@ -295,7 +295,7 @@ function renderRecipe(
     if (voices.get(sound) === master) voices.delete(sound);
     master.disconnect();
     send.disconnect();
-    if (--sounding === 0) idleSoon(context);
+    if (context === sharedContext && --sounding === 0) idleSoon(context);
   };
   let playing = sources.length;
   for (const source of sources) {
@@ -329,7 +329,7 @@ function suspend(context: AudioContext): void {
   if (context.state !== "running" || typeof context.suspend !== "function") return;
   suspending = true;
   const settled = () => {
-    suspending = false;
+    if (context === sharedContext) suspending = false;
   };
   try {
     void context.suspend().then(settled, settled);
@@ -377,7 +377,24 @@ function audioContextClass(): typeof AudioContext | undefined {
   );
 }
 
+/**
+ * Drops the shared context and everything built on it. A closed context never
+ * plays again; Safari can leave one behind after the screen locks, and only
+ * a fresh one brings sound back without a reload.
+ */
+function forget(): void {
+  sharedContext = null;
+  sharedOutput = null;
+  sharedRoom = null;
+  sharedNoise = null;
+  voices.clear();
+  sounding = 0;
+  clearTimeout(idleTimer);
+  suspending = false;
+}
+
 function getAudioContext(): AudioContext | null {
+  if (sharedContext?.state === "closed") forget();
   if (sharedContext) return sharedContext;
   const Ctor = audioContextClass();
   if (!Ctor) return null;

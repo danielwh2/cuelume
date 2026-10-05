@@ -1805,3 +1805,67 @@ test("warm builds the shared graph and starts the context without a sound", asyn
   assert.ok(log.sources.length > 0);
   assert.equal(compressors, 1);
 });
+
+test("an interrupted context, as Safari leaves one after a screen lock, starts again on the next gesture", async (context) => {
+  context.after(restoreGlobals);
+  const { Suspendable, log, made } = suspendableContext();
+  manualTimers();
+  const win = listeningWindow(Suspendable);
+  setGlobal("navigator", { userActivation: { hasBeenActive: true } });
+  setGlobal("window", win);
+  const { play } = await import(`../dist/audio/engine.js?interrupted=${Date.now()}`);
+
+  play("tap");
+  const ctx = made[0];
+  ctx.state = "interrupted";
+  // resume() outside a gesture stays pending, so the next gesture tries again
+  const before = log.sources.length;
+  play("tap");
+  assert.equal(log.sources.length, before);
+  assert.deepEqual(listening(win), GESTURES);
+  win.emit("click");
+  assert.deepEqual(ctx.calls, ["resume", "resume"]);
+  ctx.settle();
+  await flush();
+  assert.deepEqual(win.listeners, []);
+
+  // and later plays render straight away, on the same context
+  const resumed = log.sources.length;
+  play("success");
+  assert.ok(log.sources.length > resumed);
+  assert.equal(made.length, 1);
+});
+
+test("a closed context is dropped, and the next play builds a fresh one", async (context) => {
+  context.after(restoreGlobals);
+  const { Suspendable, log, made } = suspendableContext();
+  let compressors = 0;
+  class Counting extends Suspendable {
+    createDynamicsCompressor() {
+      compressors++;
+      return super.createDynamicsCompressor();
+    }
+  }
+  const timers = manualTimers();
+  const win = listeningWindow(Counting);
+  setGlobal("navigator", { userActivation: { hasBeenActive: true } });
+  setGlobal("window", win);
+  const { play } = await import(`../dist/audio/engine.js?closed=${Date.now()}`);
+
+  play("tap");
+  const old = log.sources.slice();
+  made[0].state = "closed";
+  play("tap");
+  assert.equal(made.length, 2);
+  assert.equal(compressors, 2, "the output, room and noise are rebuilt on the new context");
+  assert.ok(log.sources.length > old.length);
+
+  // the old play ending late doesn't count against the new one, which still sounds
+  for (const source of old) source.onended();
+  timers.tick(1000);
+  assert.deepEqual(made[1].calls, []);
+  for (const source of log.sources.slice(old.length)) source.onended();
+  timers.tick(1000);
+  assert.deepEqual(made[1].calls, ["suspend"]);
+  assert.deepEqual(made[0].calls, []);
+});
