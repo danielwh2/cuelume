@@ -1,6 +1,6 @@
 {
   "name": "cuelume",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Curated interaction sounds for the web — synthesized live with zero runtime dependencies.",
   "keywords": [
     "web-audio",
