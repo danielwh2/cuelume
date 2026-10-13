@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Cuelume — vanilla example</title>
+  </head>
+  <body>
+    <button data-cuelume-tap>Save</button>
+    <button data-cuelume-tap data-cuelume-emphasis="subtle">Skip</button>
+    <input data-cuelume-type placeholder="Search" />
+    <select data-cuelume-select>
+      <option>One</option>
+      <option>Two</option>
+      <option>Three</option>
+    </select>
+    <button id="deploy">Deploy</button>
+
+    <script type="module">
+      import { bind, play } from "../../dist/index.js";
+
+      bind();
+
+      document.querySelector("#deploy").addEventListener("click", async () => {
+        play("loading");
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        play("success", { emphasis: "strong" });
+      });
+    </script>
+  </body>
+</html>
