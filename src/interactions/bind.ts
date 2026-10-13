@@ -54,7 +54,8 @@ const CLICK_CUES: Record<string, SoundName> = {
 };
 const CLICK_SELECTOR = Object.keys(CLICK_CUES).map((attr) => `[${attr}]`).join();
 
-const boundRoots = new WeakSet<ParentNode>();
+/** Each bound root: how many callers hold it, and the signal that removes its listeners. */
+const bound = new WeakMap<ParentNode, { holders: number; listeners: AbortController }>();
 const handledEvents = new WeakSet<Event>();
 const lastPlayed = { hover: -Infinity, type: -Infinity };
 /** The last selected index per select group, so the next pick knows which way it moved. */
@@ -170,7 +171,7 @@ function match(root: ParentNode, event: Event, attr: string, fallback: SoundName
   return element && (root as Node).contains(element) ? [element, attr, fallback] : null;
 }
 
-function listen(root: ParentNode, eventName: string, find: (event: Event) => Match): void {
+function listen(root: ParentNode, signal: AbortSignal, eventName: string, find: (event: Event) => Match): void {
   (root as EventTarget).addEventListener(
     eventName,
     (event) => {
@@ -190,19 +191,32 @@ function listen(root: ParentNode, eventName: string, find: (event: Event) => Mat
         (event as KeyboardEvent).code,
       );
     },
-    true,
+    { capture: true, signal },
   );
 }
 
 /**
  * Delegates `data-cuelume-*` interactions under `root` (default: the whole
  * document). Safe during SSR and safe to call repeatedly for the same root.
+ *
+ * Returns its undo, for a component that unmounts or a module that hot
+ * reloads. A root stays bound until every caller that bound it has let go.
  */
-export function bind(root?: ParentNode): void {
-  if (typeof document === "undefined") return;
+export function bind(root?: ParentNode): () => void {
+  if (typeof document === "undefined") return () => {};
   const scope = root ?? document;
-  if (boundRoots.has(scope)) return;
-  boundRoots.add(scope);
+  const binding = bound.get(scope) ?? { holders: 0, listeners: new AbortController() };
+  let holding = true;
+  const unbind = () => {
+    if (!holding) return;
+    holding = false;
+    if (--binding.holders > 0) return;
+    binding.listeners.abort();
+    bound.delete(scope);
+  };
+  if (binding.holders++ > 0) return unbind;
+  bound.set(scope, binding);
+  const { signal } = binding.listeners;
 
   /** The marked element an event activates, its attribute, and the control inside a marked label. */
   const clicked = (event: Event) => {
@@ -220,7 +234,7 @@ export function bind(root?: ParentNode): void {
   const direction = (element: HTMLElement, attr: string, inside: HTMLElement | null, beforeClick: boolean) =>
 attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr === "data-cuelume-toggle" ? switched(inside ?? element, beforeClick) : undefined;
 
-  listen(scope, "click", (event) => {
+  listen(scope, signal, "click", (event) => {
     const found = clicked(event);
     if (!found) return null;
     const { element, attr, inside } = found;
@@ -236,7 +250,7 @@ attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr 
     return [element, attr, CLICK_CUES[attr], { input: inputMethod(event), direction: direction(element, attr, inside, false) }];
   });
 
-  listen(scope, "pointerdown", (event) => {
+  listen(scope, signal, "pointerdown", (event) => {
     // a press abandoned without a click or a cancel is over once another pointer goes down
     pressed = null;
     // Only a mouse presses here. A finger or a pen may be starting a scroll, and neither's
@@ -253,16 +267,16 @@ attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr 
     return legacy && [legacy[0], legacy[1], legacy[2], { input: inputMethod(event) }];
   });
 
-  (scope as EventTarget).addEventListener("pointercancel", () => (pressed = null), true);
+  (scope as EventTarget).addEventListener("pointercancel", () => (pressed = null), { capture: true, signal });
 
-  listen(scope, "change", (event) => {
+  listen(scope, signal, "change", (event) => {
     const found = match(scope, event, "data-cuelume-select", "select");
     if (!found || !isNativeControl(found[0])) return null;
     const [element, attr, fallback] = found;
     return [element, attr, fallback, { direction: moved(element, (element as HTMLSelectElement).selectedIndex) }];
   });
 
-  listen(scope, "keydown", (event) => {
+  listen(scope, signal, "keydown", (event) => {
     // a press abandoned without a click or a cancel is over once a key goes down
     pressed = null;
     const found = match(scope, event, "data-cuelume-type", "type");
@@ -274,14 +288,14 @@ attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr 
     return [element, attr, fallback, { key: keyRole(key.key) }, "press"];
   });
 
-  listen(scope, "keyup", (event) => {
+  listen(scope, signal, "keyup", (event) => {
     // the key is done wherever it lifts, even if focus left the field
     if (!typed.delete((event as KeyboardEvent).code)) return null;
     const found = match(scope, event, "data-cuelume-type", "type");
     return found && found[0] === event.target ? [found[0], found[1], found[2], {}, "release"] : null;
   });
 
-  listen(scope, "pointerenter", (event) => {
+  listen(scope, signal, "pointerenter", (event) => {
     const found = match(scope, event, "data-cuelume-hover", "select");
     if (!found || !isMouse(event as PointerEvent)) return null;
     const relatedTarget = (event as PointerEvent).relatedTarget;
@@ -289,8 +303,10 @@ attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr 
     return throttled("hover", HOVER_GAP_MS) ? null : found;
   });
 
-  listen(scope, "pointerup", (event) => {
+  listen(scope, signal, "pointerup", (event) => {
     const found = match(scope, event, "data-cuelume-release", "tap");
     return found && !found[0].hasAttribute("data-cuelume-press") ? found : null;
   });
+
+  return unbind;
 }

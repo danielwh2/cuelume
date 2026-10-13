@@ -28,8 +28,13 @@ const audioParam = () => ({
     this.ramps.push(value);
     this.rampTimes.push(time);
   },
-  linearRampToValueAtTime(value) {
+  linearRampToValueAtTime(value, time) {
     this.swell = value;
+    this.swellAt = time;
+  },
+  cancelScheduledValues() {
+    this.ramps.length = 0;
+    this.rampTimes.length = 0;
   },
 });
 
@@ -1082,10 +1087,12 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
       this.attributes = new Map(Object.entries(attributes));
       this.listeners = new Map();
     }
-    addEventListener(type, listener) {
+    addEventListener(type, listener, options) {
+      if (options?.signal?.aborted) return; // as the DOM does
       const listeners = this.listeners.get(type) ?? [];
       listeners.push(listener);
       this.listeners.set(type, listeners);
+      options?.signal?.addEventListener("abort", () => listeners.splice(listeners.indexOf(listener), 1));
     }
     emit(type, target = this, options = {}) {
       const event = { target, relatedTarget: null, pointerType: "mouse", key: "a", ...options };
@@ -1502,6 +1509,102 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
   played(1, () => root.emit("keydown", keys, { key: "d", code: "KeyD" }));
   played(0, () => root.emit("keyup", root, { key: "d", code: "KeyD" }));
   played(0, () => root.emit("keyup", keys, { key: "d", code: "KeyD" }));
+
+  // bind() hands back its undo. A root stays bound until every caller has let go, an undo counts once,
+  // and the root can be bound again afterwards.
+  const panel = new FakeElement();
+  const save = new FakeElement(panel, "BUTTON", { "data-cuelume-tap": "" });
+  const [first_, second_] = [bind(panel), bind(panel)];
+  now += 1_000;
+  played(1, () => panel.emit("click", save));
+  first_();
+  first_();
+  now += 1_000;
+  played(1, () => panel.emit("click", save));
+  second_();
+  for (const listeners of panel.listeners.values()) assert.equal(listeners.length, 0);
+  now += 1_000;
+  played(0, () => panel.emit("click", save));
+  const again = bind(panel);
+  now += 1_000;
+  played(1, () => panel.emit("click", save));
+  again();
+});
+
+test("muting is immediate: what is ringing fades at once, and a press from before it is forgotten", async (context) => {
+  context.after(restoreGlobals);
+  const { Context, log } = recordingContext();
+  const gains = [];
+  class Recording extends Context {
+    createGain() {
+      const gain = super.createGain();
+      gains.push(gain);
+      return gain;
+    }
+  }
+  setGlobal("performance", { now: () => 0 });
+  setGlobal("setTimeout", () => 0);
+  setGlobal("window", { AudioContext: Recording });
+  const { play, press, release, setEnabled } = await import(`../dist/audio/engine.js?mute=${Date.now()}`);
+  const { THEMES } = await import("../dist/sounds/themes.js");
+  const masterOf = (recipe) => gains.findLast((gain) => gain.gain.value === recipe.masterGain);
+
+  play("attention");
+  press("tap", { theme: "press" });
+  const ringing = [masterOf(THEMES.default.attention), masterOf(THEMES.press.tap)];
+  assert.ok(ringing.every((master) => master.gain.swell === undefined));
+  setEnabled(false);
+  for (const master of ringing) {
+    assert.equal(master.gain.swell, 0);
+    assert.ok(master.gain.swellAt > 0 && master.gain.swellAt < 0.05, "at once, without a click");
+  }
+  // the press from before the mute never lets go into the sound that came back
+  setEnabled(true);
+  const before = log.sources.length;
+  release("tap");
+  assert.equal(log.sources.length, before);
+  // and a cue played afterwards rings as usual
+  play("attention");
+  assert.equal(masterOf(THEMES.default.attention).gain.swell, undefined);
+  assert.ok(log.sources.length > before);
+});
+
+test("unlock starts audio from a gesture and says whether cues can sound", async (context) => {
+  context.after(restoreGlobals);
+  const userActivation = { hasBeenActive: false };
+  setGlobal("navigator", { userActivation });
+
+  // no Web Audio at all: the server, an old browser
+  const bare = await import(`../dist/audio/engine.js?bare=${Date.now()}`);
+  assert.equal(await bare.unlock(), false);
+
+  let constructions = 0;
+  class Suspended {
+    state = "suspended";
+    constructor() {
+      constructions++;
+    }
+    resume() {
+      this.state = "running";
+      return Promise.resolve();
+    }
+  }
+  setGlobal("window", { AudioContext: Suspended });
+  const { unlock } = await import(`../dist/audio/engine.js?unlock=${Date.now()}`);
+  // before any interaction the browser would refuse, so nothing is even built
+  assert.equal(await unlock(), false);
+  assert.equal(constructions, 0);
+  userActivation.hasBeenActive = true;
+  assert.equal(await unlock(), true);
+  assert.equal(await unlock(), true, "already running");
+  assert.equal(constructions, 1);
+
+  // a browser that refuses, by rejecting or by staying suspended
+  for (const resume of [() => Promise.reject(new Error("blocked")), () => Promise.resolve(), () => { throw new Error("blocked"); }]) {
+    setGlobal("window", { AudioContext: class { state = "suspended"; resume = resume; } });
+    const refused = await import(`../dist/audio/engine.js?refused=${Math.random()}`);
+    assert.equal(await refused.unlock(), false);
+  }
 });
 
 test("every play rings into one shared room, and a finished play lets go of it", async (context) => {

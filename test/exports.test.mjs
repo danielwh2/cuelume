@@ -9,6 +9,7 @@ test("package exports resolve: main, themes, package.json", async () => {
   assert.equal(main.sounds.length, 14);
   assert.equal(typeof main.play, "function");
   assert.equal(typeof main.bind, "function");
+  assert.equal(typeof main.unlock, "function");
 
   const { THEMES, themes } = await import("cuelume/themes");
   assert.deepEqual(Object.keys(THEMES), [...themes]);

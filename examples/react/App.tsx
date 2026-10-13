@@ -2,11 +2,10 @@ import { useEffect } from "react";
 import { bind, play } from "cuelume";
 
 // One bind() for the whole app: delegated listeners keep working as
-// components and routes replace descendants.
+// components and routes replace descendants. bind() returns its undo, so
+// React unbinds on unmount.
 export function App() {
-  useEffect(() => {
-    bind();
-  }, []);
+  useEffect(() => bind(), []);
 
   async function deploy() {
     play("loading");

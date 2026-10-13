@@ -13,8 +13,25 @@ export const SUBSONIC_HZ = 40;
 /** Seconds of shared noise. Noise layers loop it from a random point, so none is made per play. */
 export const NOISE_SECONDS = 2;
 
-/** One context's output bus, room send target, and cached noise buffer. Owned by engine.ts. */
-export type OutputBus = { output: GainNode; room: AudioNode; noise: AudioBuffer | null };
+/** One context's output bus, room send target, cached noise buffer, and the voices sounding on it. Owned by engine.ts. */
+export type OutputBus = { output: GainNode; room: AudioNode; noise: AudioBuffer | null; live: Set<GainNode> };
+
+/** How long a silenced voice takes to fade: short enough to hear as at once, long enough not to click. */
+const SILENCE_FADE = 0.015;
+
+/**
+ * Fades every voice sounding on `bus`, for a mute that should be heard at once.
+ * ponytail: the room's own tail, a quarter of a second and 22 dB down, rings out; gate its return if that is ever heard
+ */
+export function silence(context: AudioContext, bus: OutputBus): void {
+  const now = context.currentTime;
+  for (const { gain } of bus.live) {
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(0, now + SILENCE_FADE);
+  }
+  bus.live.clear();
+}
 
 export function getNoise(context: AudioContext, bus: OutputBus): AudioBuffer {
   if (bus.noise) return bus.noise;
@@ -92,5 +109,5 @@ export function createOutput(context: AudioContext): OutputBus {
   subsonic.Q.value = FLAT_Q;
 
   output.connect(subsonic).connect(limiter).connect(context.destination);
-  return { output, room: buildRoom(context, output), noise: null };
+  return { output, room: buildRoom(context, output), noise: null, live: new Set() };
 }

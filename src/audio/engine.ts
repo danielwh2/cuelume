@@ -17,7 +17,7 @@ import {
   type KeyRole,
 } from "../sounds/context.js";
 import { THEMES, isThemeName, type ThemeName } from "../sounds/themes.js";
-import { createOutput, type OutputBus } from "./output.js";
+import { createOutput, silence, type OutputBus } from "./output.js";
 import { renderRecipe, type Part, type Played, type Voices } from "./render.js";
 
 export type { Part } from "./render.js";
@@ -38,9 +38,18 @@ function normalizeVolume(value: unknown, fallback: number): number {
     : fallback;
 }
 
-/** Enables or disables future playback. Preference storage stays with the app. */
+/**
+ * Turns sound on or off. Off is heard at once: whatever is ringing fades
+ * within a few milliseconds, and a press waiting for its release is forgotten.
+ * Preference storage stays with the app.
+ */
 export function setEnabled(value: boolean): void {
-  if (typeof value === "boolean") enabled = value;
+  if (typeof value !== "boolean") return;
+  enabled = value;
+  if (value) return;
+  held.clear();
+  voices.clear();
+  if (sharedContext && sharedBus) silence(sharedContext, sharedBus);
 }
 
 /**
@@ -54,6 +63,33 @@ export function setTheme(theme: ThemeName): void {
 /** Sets the volume multiplier for future playback. Preference storage stays with the app. */
 export function setVolume(value: number): void {
   globalVolume = normalizeVolume(value, globalVolume);
+}
+
+/** Browsers refuse audio until the page has been interacted with; where they say so, cuelume doesn't ask. */
+function isBlocked(): boolean {
+  return typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive === false;
+}
+
+/**
+ * Starts audio now rather than on the first cue. Call it from a user gesture,
+ * such as the click that turns sound on: some browsers only start audio
+ * there, and a cue played later from code would stay silent. Resolves `true`
+ * once cues can sound, `false` while the browser still blocks audio or has no
+ * Web Audio. Never rejects.
+ */
+export function unlock(): Promise<boolean> {
+  const context = isBlocked() ? null : getAudioContext();
+  if (!context) return Promise.resolve(false);
+  if (context.state === "running") return Promise.resolve(true);
+  try {
+    return context.resume().then(
+      () => context.state === "running",
+      () => false,
+    );
+  } catch {
+    // Some browsers throw synchronously when audio is blocked.
+    return Promise.resolve(false);
+  }
 }
 
 function getAudioContext(): AudioContext | null {
@@ -148,7 +184,7 @@ export function release(sound: SoundName = "tap"): void {
 export function playInContext(sound: unknown, options: PlayOptions | undefined, interaction: Context, part: Part = "both", gesture?: string): void {
   const name = resolveSound(sound);
   if (!enabled || !name) return;
-  if (typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive === false) return;
+  if (isBlocked()) return;
 
   const holding = gesture ? `${name}:${gesture}` : name;
   let played: Played;

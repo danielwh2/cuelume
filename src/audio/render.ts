@@ -186,6 +186,7 @@ export function renderRecipe(context: AudioContext, getBus: () => OutputBus, voi
   const send = context.createGain();
   send.gain.value = ROOM_SEND * (recipe.room ?? 1);
   master.connect(send).connect(room);
+  bus.live.add(master);
 
   // a release rings with its press rather than replacing it
   if (part !== "release") {
@@ -208,6 +209,7 @@ export function renderRecipe(context: AudioContext, getBus: () => OutputBus, voi
   const cleanupAfterMs = (sourceEnd(layers) + CLEANUP_MARGIN) * 1000;
   setTimeout(() => {
     if (voices.get(sound)?.gain === master) voices.delete(sound);
+    bus.live.delete(master);
     master.disconnect();
     send.disconnect();
   }, cleanupAfterMs);

@@ -8,6 +8,22 @@ aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `unlock()`: start audio from a user gesture, such as the click that turns
+  sound on, instead of on the first cue. Resolves `true` once cues can sound
+  and `false` while the browser still blocks audio.
+- `bind()` returns a function that unbinds, for a component that unmounts or
+  a module that hot reloads. A root stays bound until every caller that bound
+  it has called theirs.
+
+### Changed
+
+- `setEnabled(false)` is heard at once: cues already ringing fade within a
+  few milliseconds, where they used to play out.
+
+## [0.2.5] - 2026-10-13
+
+### Added
+
 - `press()` and `release()`: the two halves of `play()`, for a custom
   control that presses on `pointerdown` and lets go on `pointerup`.
 - A recipe can carry a `release` and a `walk`. In `press`, tap, type,
@@ -47,5 +63,6 @@ aims to follow [Semantic Versioning](https://semver.org/).
 - `press` theme, struck-bar tones, and a shared room send on every cue.
   Each cue is one sound rather than a stack of effects.
 
-[Unreleased]: https://github.com/danielwh2/cuelume/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/danielwh2/cuelume/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/danielwh2/cuelume/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/danielwh2/cuelume/releases/tag/v0.2.4

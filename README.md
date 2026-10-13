@@ -242,21 +242,32 @@ play("select", { theme: "bubble" }); // one playful moment; the theme stays defa
 Cuelume starts enabled at full volume and never reads or writes storage. Your app owns the controls, labels, and persistence:
 
 ```ts
-import { setEnabled, setVolume } from "cuelume";
+import { setEnabled, setVolume, unlock } from "cuelume";
 
 setVolume(0.7);    // global multiplier, clamped to 0–1
-setEnabled(false); // future play attempts become no-ops
+setEnabled(false); // silent at once: ringing cues fade, later plays are no-ops
 setEnabled(true);  // enable playback again
 ```
 
 If your app plays sound often, or the sound is decoration rather than information, give people a visible Sound toggle and pass its value to `setEnabled()`.
+
+Turning sound on is also the moment to start audio. Browsers let a page make sound only after someone has interacted with it, and some start audio only inside the gesture itself, so a cue played later from code can stay silent. Call `unlock()` in the click that turns sound on:
+
+```ts
+soundToggle.addEventListener("click", async () => {
+  setEnabled(true);
+  const ready = await unlock(); // false while the browser still blocks audio
+});
+```
+
+`unlock()` cannot start audio the browser refuses; the [autoplay rules](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay) still apply. Called before any interaction it resolves `false` and builds nothing.
 
 Cuelume does not follow `prefers-reduced-motion`. That setting is about motion. Someone who turns off animation may still want sound, and someone who wants silence may never touch it.
 
 ## API
 
 ```ts
-import { play, press, release, bind, setEnabled, setVolume, setTheme, sounds, themes, type SoundName, type Emphasis, type ThemeName, type PlayOptions } from "cuelume";
+import { play, press, release, bind, unlock, setEnabled, setVolume, setTheme, sounds, themes, type SoundName, type Emphasis, type ThemeName, type PlayOptions } from "cuelume";
 ```
 
 - **`play(name?: SoundName, options?: PlayOptions)`**: play a cue immediately. Defaults to `"tap"`. A cue with a release plays it 90 ms after the press, as a quick click would. Options apply to this play only:
@@ -273,8 +284,9 @@ import { play, press, release, bind, setEnabled, setVolume, setTheme, sounds, th
   key.addEventListener("pointerdown", () => press("tap"));
   key.addEventListener("pointerup", () => release("tap"));
   ```
-- **`bind(root?: ParentNode)`**: delegate all `data-cuelume-*` interactions under `root` (defaults to the whole document). Idempotent, and handles elements added later.
-- **`setEnabled(enabled: boolean)`**: enable or disable future playback. Does not persist the preference or stop sounds already playing.
+- **`bind(root?: ParentNode): () => void`**: delegate all `data-cuelume-*` interactions under `root` (defaults to the whole document). Idempotent, and handles elements added later. Returns a function that unbinds; a root stays bound until every caller that bound it has called theirs.
+- **`unlock(): Promise<boolean>`**: start audio now, from a user gesture, instead of on the first cue. Resolves `true` once cues can sound, `false` while the browser blocks audio or has no Web Audio. Never rejects.
+- **`setEnabled(enabled: boolean)`**: turn sound on or off. Off is immediate: cues already ringing fade within a few milliseconds. Does not persist the preference.
 - **`setVolume(volume: number)`**: set the global volume for future playback, clamped to `0–1`. Non-finite values are ignored and preferences are not persisted.
 - **`setTheme(theme: ThemeName)`**: switch the material of future playback. Unknown names are ignored; the choice isn't persisted.
 - **`themes`**: the built-in theme names, `["default", "mech", "bubble", "press"]`.
@@ -315,22 +327,22 @@ The old bindings also keep working until 1.0:
 - **Struck, not played back.** Tones are modelled on real bars: each overtone dies faster the higher it is, and a brief mallet contact starts the note. Every play of a frequent cue is one strike, a little harder or softer than the last, so a harder one is louder and brighter together and no two sound identical. Outcome cues play the same every time, so their meaning never blurs.
 - **One faint room.** Every cue rings very faintly into one shared, short stereo room (about 22 dB down), which places it in the space around the listener rather than inside their head. `success` and `ready` ring into it a little more.
 - **One lazy `AudioContext`.** Shared across all sounds, created on first use.
-- **Autoplay-friendly.** Attempts to resume suspended audio without surfacing errors when a browser blocks it.
+- **Autoplay-friendly.** Attempts to resume suspended audio without surfacing errors when a browser blocks it. `unlock()` starts it from the gesture that turns sound on and says whether it worked.
 - **SSR-safe.** Importing on the server is a no-op.
 - **Safe fallback.** Invalid runtime names and unavailable or blocked Web Audio make `play()` a silent no-op. An invalid attribute value plays that binding's default cue.
-- **Dynamic, idempotent binding.** `bind()` never double-attaches listeners, and later DOM additions, removals, and clones work automatically.
+- **Dynamic, idempotent binding.** `bind()` never double-attaches listeners, and later DOM additions, removals, and clones work automatically. It returns its undo for a component that unmounts.
 
 ## Frameworks
 
 Cuelume works anywhere HTML does: plain pages, Astro, React, Vue. Call `bind()` once after the DOM is ready. Delegated listeners keep working when components or routes replace descendants.
 
-React:
+React, where `bind()` returns its own cleanup:
 
 ```tsx
-useEffect(() => {
-  bind();
-}, []);
+useEffect(() => bind(), []);
 ```
+
+A hot-reloading module can call that same function in its dispose hook.
 
 Astro (with view transitions):
 
