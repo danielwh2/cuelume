@@ -4,8 +4,7 @@ const THEMES = ['default', 'mech', 'bubble', 'press'] as const
 const OFF = 'off'
 const DEFAULT_THEME = 'default'
 const THEME_KEY = 'theme'
-// The cues are rendered near -21 dBFS, the library's own level.
-const GAIN = 2
+const GAIN = 1.4
 // A short reply is still on screen when it lands; only a turn worth walking away from rings.
 const MIN_TURN_MS = 10_000
 

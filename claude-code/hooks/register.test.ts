@@ -16,7 +16,7 @@ test('rings in the chosen theme, and not at all when off', async ($, on) => {
   mock.store(on)
   on('audio.play', (_, e) => {
     played.push(`${e.clip.asset} x${e.gain}`)
-    return null
+    return { value: null }
   })
   on('command.register', (_, e) => ({ command: e.name }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
@@ -29,12 +29,12 @@ test('rings in the chosen theme, and not at all when off', async ($, on) => {
 
   await $.turn.complete({ ...turn, durationMs: 60_000 })
   await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'ls' } })
-  expect(played).toEqual(['sounds/default/ready.wav x2', 'sounds/default/attention.wav x2'])
+  expect(played).toEqual(['sounds/default/ready.wav x1.4', 'sounds/default/attention.wav x1.4'])
 
   const switched = await $.command.run({ command: 'cuelume', args: 'bubble' })
   expect(switched.text).toBe('cuelume: bubble.')
   await $.turn.complete({ ...turn, durationMs: 60_000 })
-  expect(played.slice(2)).toEqual(['sounds/bubble/ready.wav x2', 'sounds/bubble/ready.wav x2'])
+  expect(played.slice(2)).toEqual(['sounds/bubble/ready.wav x1.4', 'sounds/bubble/ready.wav x1.4'])
 
   await $.command.run({ command: 'cuelume', args: 'off' })
   await $.turn.complete({ ...turn, durationMs: 60_000 })

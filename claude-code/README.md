@@ -47,4 +47,4 @@ The plugin registers four hooks. None of them makes a decision for you. The firs
 
 ## How the sounds are made
 
-Cuelume synthesizes its cues live with Web Audio. A Claude Code mod can only play audio files, so each cue here is rendered once from Cuelume's own recipes to a 48 kHz WAV. The renderer skips Cuelume's output limiter, so a cue is close to what the library plays in a browser, not identical.
+Cuelume synthesizes its cues live with Web Audio. A Claude Code mod can only play audio files, so each cue here is rendered once from Cuelume's own recipes to a 48 kHz WAV. The renderer uses the library's own room and noise and leaves out the small variation between plays, so a cue here sounds the same every time. The WAVs sit at the library's level, peaking near -18 dBFS, and the plugin plays them at 1.4 times that.
