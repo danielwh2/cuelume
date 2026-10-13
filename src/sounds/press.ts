@@ -33,7 +33,6 @@ const RELEASE_HZ = 4800;
 /** The video's walk: C, E and A over its first note. */
 const WALK = [0, 4, 9];
 /** A note that rings as the video's does: about 45 dB a second. */
-const RING = 1.4;
 
 const STEADY = { pitch: 0, level: 0.08 };
 
@@ -41,7 +40,7 @@ export const PRESS = {
   /** The Subscribe press: a click over a deep C that swells in and rings, and a lighter click letting go. Quick taps walk C, E, A. */
   tap: {
     masterGain: 0.0431,
-    layers: [...click(PRESS_HZ, 0.53), ...note(C2, RING, 0.12), thud(200, 0.05, 0.15, { from: "strong" })],
+    layers: [...click(PRESS_HZ, 0.53), ...note(C2, 1.36, 0.12), thud(200, 0.0472, 0.15, { from: "strong" })],
     release: click(RELEASE_HZ, 0.28, { from: "normal" }),
     walk: WALK,
     vary: STEADY,
@@ -49,21 +48,21 @@ export const PRESS = {
   /** A keycap landing, and lifting off quieter as the key comes up. Every stroke a slightly different key. */
   type: {
     masterGain: 0.297,
-    layers: [...click(4200, 0.25), knock(305, 0.025, 0.04), knock(150, 0.035, 0.03, { from: "strong" })],
-    release: [ring(4100, 0.08, { from: "normal" }), ring(1000, 0.06, { filterQ: 2, from: "normal" }), knock(414, 0.015, 0.012, { from: "normal" })],
+    layers: [...click(4200, 0.25), knock(305, 0.0288, 0.04), knock(150, 0.0424, 0.03, { from: "strong" })],
+    release: [ring(4100, 0.08, { from: "normal" }), ring(1000, 0.06, { filterQ: 2, from: "normal" }), knock(414, 0.0216, 0.012, { from: "normal" })],
     vary: { pitch: 0.08, level: 0.15 },
   },
   /** A detent: only the light click, over a small, high knock. A later option knocks higher, an earlier one lower. */
   select: {
     masterGain: 0.442,
-    layers: [...click(RELEASE_HZ, 0.12), knock(700, 0.015, 0.02), knock(350, 0.025, 0.02, { from: "strong" })],
+    layers: [...click(RELEASE_HZ, 0.12), knock(700, 0.0196, 0.02), knock(350, 0.0326, 0.02, { from: "strong" })],
     release: [ring(RELEASE_HZ, 0.03, { from: "normal" })],
     vary: { pitch: 0.02, level: 0.1 },
   },
   /** A switch thrown: the press and a firm knock over a short, deep E, letting go lighter. Switching off knocks upward. */
   toggle: {
     masterGain: 0.0571,
-    layers: [...click(PRESS_HZ, 0.245), knock(330, 0.035, 0.05), ...note(E2, 0.3, 0.06), knock(165, 0.045, 0.05, { from: "strong" })],
+    layers: [...click(PRESS_HZ, 0.245), knock(330, 0.0389, 0.05), ...note(E2, 0.324, 0.06), knock(165, 0.05, 0.05, { from: "strong" })],
     release: click(RELEASE_HZ, 0.1, { from: "normal" }),
     vary: STEADY,
   },
@@ -72,10 +71,10 @@ export const PRESS = {
     masterGain: 0.0857,
     layers: [
       ...click(RELEASE_HZ, 0.15),
-      knock(440, 0.03, 0.03),
+      knock(440, 0.0363, 0.03),
       air(1600, 3200, 0.035, 0.1),
-      ...note(A2, 0.8, 0.08),
-      thud(260, 0.04, 0.12, { from: "strong" }),
+      ...note(A2, 0.827, 0.08),
+      thud(260, 0.039, 0.12, { from: "strong" }),
     ],
     release: [ring(RELEASE_HZ, 0.05, { from: "normal" })],
     walk: WALK,
@@ -86,27 +85,27 @@ export const PRESS = {
     masterGain: 0.099,
     layers: [
       ...click(3200, 0.204),
-      knock(130.81, 0.04, 0.06),
+      knock(130.81, 0.0432, 0.06),
       air(1800, 700, 0.04, 0.1, { from: "normal" }),
-      ...note(C2, 0.25, 0.08),
-      thud(180, 0.04, 0.2, { from: "strong" }),
+      ...note(C2, 0.258, 0.08),
+      thud(180, 0.0364, 0.2, { from: "strong" }),
     ],
     vary: STEADY,
   },
   /** No click: C, G and E struck at once, swelling in and ringing long into a small room. */
   success: {
     masterGain: 0.102,
-    layers: [...note(C4, RING, 0.072), ...note(G4, RING, 0.06), ...note(E5, 1.2, 0.045), ...note(C4 / 2, RING, 0.036, { from: "strong" })],
+    layers: [...note(C4, 1.47, 0.072), ...note(G4, 1.51, 0.06), ...note(E5, 1.36, 0.045), ...note(C4 / 2, 1.64, 0.036, { from: "strong" })],
     room: LANDED,
   },
   /** No click: a low A with the C an octave and a third above, minor and spread, over a soft thump. A calm refusal. */
   error: {
     masterGain: 0.0708,
     layers: [
-      ...note(A2, 0.5, 0.12),
-      ...note(C5, 0.4, 0.04),
-      thud(200, 0.06, 0.2, { attack: 0.01 }),
-      thud(120, 0.08, 0.2, { from: "strong" }),
+      ...note(A2, 0.487, 0.12),
+      ...note(C5, 0.461, 0.04),
+      thud(200, 0.0545, 0.2, { attack: 0.01 }),
+      thud(120, 0.0727, 0.2, { from: "strong" }),
     ],
   },
   /** A swipe: the light click with air sliding past it. Going back, the air falls. */
@@ -114,45 +113,45 @@ export const PRESS = {
     masterGain: 0.837,
     layers: [
       ...click(RELEASE_HZ, 0.15),
-      air(600, 1400, 0.09, 0.12, { filterQ: 1 }),
-      knock(587.33, 0.015, 0.015, { from: "normal" }),
-      thud(300, 0.05, 0.12, { from: "strong" }),
+      air(600, 1400, 0.0877, 0.12, { filterQ: 1 }),
+      knock(587.33, 0.0207, 0.015, { from: "normal" }),
+      thud(300, 0.0487, 0.12, { from: "strong" }),
     ],
     vary: STEADY,
   },
   /** No click: a plain fifth, A and E, between success and error. Heads up, nothing broke. */
   warning: {
     masterGain: 0.0716,
-    layers: [...note(A3, 0.9, 0.096), ...note(E4, 0.8, 0.072), ...note(A3 / 2, 0.9, 0.048, { from: "strong" })],
+    layers: [...note(A3, 0.905, 0.096), ...note(E4, 0.84, 0.072), ...note(A3 / 2, 1.01, 0.048, { from: "strong" })],
   },
   /** No click: one warm, low G that swells in softly and fades within about a second. Work has begun. */
   loading: {
     masterGain: 0.0661,
     layers: [
-      { kind: "tone", waveform: "sine", frequency: G3, attack: 0.35, decay: 0.8, peak: 0.05 },
-      { from: "normal", kind: "tone", waveform: "sine", frequency: G3 * 2, attack: 0.35, decay: 0.6, peak: 0.01 },
-      { from: "strong", kind: "tone", waveform: "sine", frequency: G3 / 2, attack: 0.35, decay: 0.8, peak: 0.03 },
+      { kind: "tone", waveform: "sine", frequency: G3, attack: 0.35, decay: 0.889, peak: 0.05 },
+      { from: "normal", kind: "tone", waveform: "sine", frequency: G3 * 2, attack: 0.35, decay: 0.9, peak: 0.01 },
+      { from: "strong", kind: "tone", waveform: "sine", frequency: G3 / 2, attack: 0.35, decay: 0.969, peak: 0.03 },
     ],
   },
   /** No click: one long, warm G below success, ringing into a small room. A result is there. */
   ready: {
     masterGain: 0.0983,
-    layers: [...note(G3, 1.8, 0.108), ...note(G3 / 2, 1.8, 0.054, { from: "strong" })],
+    layers: [...note(G3, 1.78, 0.108), ...note(G3 / 2, 1.98, 0.054, { from: "strong" })],
     room: LANDED,
   },
   /** No click: A and E over A, high and bell-like, ringing longest. Blocked until the user answers. */
   attention: {
     masterGain: 0.125,
-    layers: [...note(A4, 2.2, 0.067), ...note(E5, 2, 0.048), ...note(A5, 1.5, 0.024), ...note(A4 / 2, 2.2, 0.034, { from: "strong" })],
+    layers: [...note(A4, 2.34, 0.067), ...note(E5, 2.24, 0.048), ...note(A5, 1.89, 0.024), ...note(A4 / 2, 2.61, 0.034, { from: "strong" })],
   },
   /** A number rolling: a dial spun, air rising with it for as long as the roll (falling counting down). */
   count: {
     masterGain: 0.362,
     layers: [
-      { stretch: true, kind: "noise", filterType: "bandpass", filterFrequency: 900, glideTo: 1800, glideTime: 0.6, filterQ: 2, attack: 0.15, decay: 0.55, peak: 0.08 },
-      { stretch: true, kind: "noise", filterType: "lowpass", filterFrequency: 200, glideTo: 500, glideTime: 0.6, filterQ: 0.7, attack: 0.15, decay: 0.55, peak: 0.06 },
-      { stretch: true, from: "normal", kind: "noise", filterType: "bandpass", filterFrequency: 2600, glideTo: 3600, glideTime: 0.6, filterQ: 4, attack: 0.15, decay: 0.45, peak: 0.02 },
-      { stretch: true, from: "strong", kind: "noise", filterType: "lowpass", filterFrequency: 150, glideTo: 300, glideTime: 0.6, filterQ: 0.7, attack: 0.15, decay: 0.55, peak: 0.08 },
+      { stretch: true, kind: "noise", filterType: "bandpass", filterFrequency: 900, glideTo: 1800, glideTime: 0.6, filterQ: 2, attack: 0.15, decay: 0.568, peak: 0.08 },
+      { stretch: true, kind: "noise", filterType: "lowpass", filterFrequency: 200, glideTo: 500, glideTime: 0.6, filterQ: 0.7, attack: 0.15, decay: 0.594, peak: 0.06 },
+      { stretch: true, from: "normal", kind: "noise", filterType: "bandpass", filterFrequency: 2600, glideTo: 3600, glideTime: 0.6, filterQ: 4, attack: 0.15, decay: 0.587, peak: 0.02 },
+      { stretch: true, from: "strong", kind: "noise", filterType: "lowpass", filterFrequency: 150, glideTo: 300, glideTime: 0.6, filterQ: 0.7, attack: 0.15, decay: 0.568, peak: 0.08 },
     ],
     vary: { pitch: 0.02, level: 0.1 },
   },

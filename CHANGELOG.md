@@ -27,6 +27,10 @@ aims to follow [Semantic Versioning](https://semver.org/).
   sample rate. They used to be drawn at random per page, which moved a
   ringing cue such as `ready` by a few dB from one load to the next and
   could lean it left or right.
+- A layer's `decay` is now its ring time: the seconds it takes to fall
+  60 dB. It used to be the time to reach a fixed floor, so a quiet layer
+  rang up to three times longer than a loud one with the same number. Every
+  recipe was converted to ring as it did; no cue moves by more than 0.3 dB.
 
 ## [0.2.5] - 2026-10-13
 

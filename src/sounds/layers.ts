@@ -10,7 +10,7 @@ type BaseLayer = {
   offset?: number;
   /** Fade-in time, in seconds. */
   attack: number;
-  /** Fade-out time, in seconds, starting right after the attack. */
+  /** Ring time: the seconds the layer takes to fall 60 dB once the attack ends. */
   decay: number;
   /** Peak volume reached at the end of the attack. */
   peak: number;
@@ -113,12 +113,13 @@ const MODE_CEILING = 5000;
 /** A struck tone swells in over 3 ms: short enough to strike, long enough not to click. */
 const STRIKE_ATTACK = 0.003;
 /** No mode dies faster than this, or it stops being heard as a pitch. */
-const SHORTEST_MODE = 0.015;
+const SHORTEST_MODE = 0.028;
+const MODE_DAMPING = 0.75;
 
 /**
- * A struck note: one sine per mode of `material`. Each mode dies in inverse
- * proportion to its pitch, so the highs go first as on any real bar (decay
- * time falls as 1/f, van den Doel and Pai). Upper modes are ornament that
+ * A struck note: one sine per mode of `material`. A higher mode dies sooner,
+ * so the highs go first as on any real bar, though more gently than the 1/f
+ * of van den Doel and Pai's model. Upper modes are ornament that
  * subtle leaves out; `from` moves the whole note to a higher emphasis.
  */
 export function struck(
@@ -134,7 +135,7 @@ export function struck(
       const layerFrom = mode === 0 ? from : (from ?? "normal");
       return {
         kind: "tone", waveform: "sine", frequency: frequency * ratio, attack: STRIKE_ATTACK,
-        decay: Math.max(SHORTEST_MODE, decay / ratio), peak: peak * level, ...(layerFrom ? { from: layerFrom } : {}),
+        decay: Math.max(SHORTEST_MODE, decay / ratio ** MODE_DAMPING), peak: peak * level, ...(layerFrom ? { from: layerFrom } : {}),
       };
     });
 }
@@ -148,7 +149,7 @@ export const FLAT_Q = -3;
  * makes a chord a struck object rather than a test tone.
  */
 export const contact = (hardness: number, peak: number, more: Partial<NoiseLayer> = {}): NoiseLayer => ({
-  kind: "noise", filterType: "lowpass", filterFrequency: hardness, filterQ: FLAT_Q, attack: 0.001, decay: 0.003, peak, ...more,
+  kind: "noise", filterType: "lowpass", filterFrequency: hardness, filterQ: FLAT_Q, attack: 0.001, decay: 0.0035, peak, ...more,
 });
 
 /**
@@ -156,7 +157,7 @@ export const contact = (hardness: number, peak: number, more: Partial<NoiseLayer
  * Measured from the Subscribe press in DawoodUI's Artasaka preview.
  */
 export const ring = (frequency: number, peak: number, more: Partial<NoiseLayer> = {}): NoiseLayer => ({
-  kind: "noise", filterType: "bandpass", filterFrequency: frequency, filterQ: 8, attack: 0.001, decay: 0.006, peak, ...more,
+  kind: "noise", filterType: "bandpass", filterFrequency: frequency, filterQ: 8, attack: 0.001, decay: 0.0055, peak, ...more,
 });
 
 /** How far below its ring a click's body sits. */
@@ -187,7 +188,7 @@ export const thud = (frequency: number, decay: number, peak: number, more: Parti
  * the ring, level]. The octave at -6 dB carries a low note on small speakers;
  * the faint third and fourth give it its edge.
  */
-const NOTE_PARTIALS = [[1, 1, 1], [2, 0.8, 0.5], [3, 0.5, 0.04], [4, 0.4, 0.056]] as const;
+const NOTE_PARTIALS = [[1, 1, 1], [2, 0.9, 0.5], [3, 1, 0.04], [4, 0.73, 0.056]] as const;
 /** The note starts 9% sharp and settles within 15 ms. */
 const NOTE_SHARP = 1.09;
 const NOTE_SETTLE = 0.015;
@@ -196,7 +197,7 @@ const NOTE_SWELL = 0.11;
 
 /**
  * A deep note that swells in under a click and rings on, as the Artasaka
- * press does. With a `decay` of 1.4 s it falls about 45 dB a second, as the
+ * press does. With a `decay` of 1.36 s it falls about 45 dB a second, as the
  * video's does.
  * Upper partials are ornament that subtle leaves out; `from` moves the whole
  * note to a higher emphasis.

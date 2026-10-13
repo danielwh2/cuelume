@@ -32,6 +32,11 @@ const audioParam = () => ({
     this.swell = value;
     this.swellAt = time;
   },
+  setTargetAtTime(target, time, constant) {
+    this.target = target;
+    this.fallAt = time;
+    this.fall = constant;
+  },
   cancelScheduledValues() {
     this.ramps.length = 0;
     this.rampTimes.length = 0;
@@ -602,6 +607,7 @@ test("one strike per play: every layer shares it, harder is louder and brighter,
   const { play } = await import(`../dist/audio/engine.js?strike=${Date.now()}`);
   const { THEMES } = await import("../dist/sounds/themes.js");
   const { arrangement } = await import("../dist/sounds/context.js");
+  const { fallTime } = await import("../dist/audio/render.js");
   play("tap"); // builds the shared output and room first
 
   // how each layer of one play landed against its recipe: level, pitch or filter, and ring length
@@ -614,7 +620,8 @@ test("one strike per play: every layer shares it, harder is louder and brighter,
       layer,
       level: layerGains[i].gain.swell / layer.peak,
       pitch: pitched[i].value / (layer.kind === "tone" ? layer.frequency : layer.filterFrequency),
-      ring: (layerGains[i].gain.rampTimes[0] - layer.attack) / layer.decay,
+      ring: layerGains[i].gain.fall / fallTime(layer.decay),
+      gain: layerGains[i].gain,
     }));
   };
   const near = (a, b) => Math.abs(a - b) < 1e-9;
@@ -639,6 +646,13 @@ test("one strike per play: every layer shares it, harder is louder and brighter,
   // default success has no vary: every play is the recipe exactly
   for (let i = 0; i < 3; i++) {
     for (const { level, pitch, ring } of struck("default", "success")) assert.ok(near(level, 1) && near(pitch, 1) && near(ring, 1));
+  }
+
+  const SIXTY_DB_DOWN = 1e-3;
+  for (const { layer, gain } of struck("default", "success")) {
+    assert.equal(gain.target, 0, "a layer dies away to silence");
+    assert.ok(near(gain.fallAt, layer.attack), "it starts to fall as its attack ends");
+    assert.ok(near(Math.exp(-layer.decay / gain.fall), SIXTY_DB_DOWN), "and is 60 dB down one decay later");
   }
 });
 

@@ -59,6 +59,19 @@ dependencies to install: the library stays at zero.
   `OUTPUT_GAIN` is the old 4 times that. The soft clip passes anything under
   `CLIP_KNEE` untouched; the loudest single cue, struck hardest, peaked at
   0.50 over 48 takes. `test/levels.test.mjs` fails if a cue reaches the knee.
+- **`decay` is a ring time**: the seconds a layer takes to fall 60 dB once
+  its attack ends (`fallTime` in `src/audio/render.ts`), whatever its peak.
+  Two layers with the same `decay` die at the same rate. Up to 0.2.7 it was
+  the time to reach a fixed floor of 0.0001, so the real ring time was 0.81
+  to 3.05 times the number, depending on the peak. Each recipe value was
+  converted once (`decay × 60 / (20 · log10(peak / 0.0001))`) to ring as it
+  did. Four things could not be carried by a recipe number and were fitted
+  to how the cues rang: `MODE_DAMPING` 0.75 in `struck` (upper modes rang
+  as pitch to the power 0.61 to 0.79, gentler than an ideal bar's 1), the
+  ring shares in `NOTE_PARTIALS`, `SHORTEST_MODE`, and the fixed decays of
+  `contact`, `ring` and `pop`. Against 0.2.7, 199 of 321 layers ring within
+  0.6% and the rest within 24%; every cue at every emphasis is within
+  0.25 dB in loudness. Compared in the offline renderer, not by ear.
 - Behaviour-preserving refactors keep the public entries (`cuelume`,
   `cuelume/themes`) unchanged. Tests import from wherever the code lives,
   so move their imports with it and leave no re-export behind.

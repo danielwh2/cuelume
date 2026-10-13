@@ -14,6 +14,8 @@ import type { SoundName } from "../sounds/recipes.js";
 import { getNoise, NOISE_SECONDS, ROOM_SEND, type OutputBus } from "./output.js";
 
 export const SOURCE_STOP_PADDING = 0.05;
+const DECAY_DB = 60;
+export const fallTime = (decay: number) => decay / ((DECAY_DB / 20) * Math.LN10);
 const CLEANUP_MARGIN = 0.05;
 
 /** Holds `param` at `from`, then glides it toward the layer's `glideTo`, if any. */
@@ -27,7 +29,7 @@ function glide(param: AudioParam, from: number, layer: SoundLayer, startTime: nu
 function envelope(param: AudioParam, layer: SoundLayer, startTime: number): void {
   param.setValueAtTime(0, startTime);
   param.linearRampToValueAtTime(layer.peak, startTime + layer.attack);
-  param.exponentialRampToValueAtTime(0.0001, startTime + layer.attack + layer.decay);
+  param.setTargetAtTime(0, startTime + layer.attack, fallTime(layer.decay));
 }
 
 function renderTone(

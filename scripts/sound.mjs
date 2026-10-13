@@ -16,7 +16,7 @@ const ROOT = new URL("..", import.meta.url);
 export const { THEMES } = await import(new URL("dist/sounds/themes.js", ROOT));
 const { shapeFor } = await import(new URL("dist/sounds/context.js", ROOT));
 const { FLAT_Q } = await import(new URL("dist/sounds/layers.js", ROOT));
-const { layersFor, SOURCE_STOP_PADDING: PAD } = await import(new URL("dist/audio/render.js", ROOT));
+const { layersFor, fallTime, SOURCE_STOP_PADDING: PAD } = await import(new URL("dist/audio/render.js", ROOT));
 const { OUTPUT_GAIN, SUBSONIC_HZ, NOISE_SECONDS, ROOM_SECONDS, ROOM_LOWPASS, ROOM_SEND, ROOM_SEEDS, seeded, fillNoise, fillRoom } = await import(
   new URL("dist/audio/output.js", ROOT)
 );
@@ -29,7 +29,7 @@ const seedOf = (text) => [...text].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0
 
 // Web Audio's exponentialRamp: v0 * (v1/v0)^((t-t0)/(t1-t0))
 const expAt = (v0, v1, t0, t1, t) => (t <= t0 ? v0 : t >= t1 ? v1 : v0 * Math.pow(v1 / v0, (t - t0) / (t1 - t0)));
-const envAt = (l, t) => (t < 0 ? 0 : t < l.attack ? (l.peak * t) / l.attack : expAt(l.peak, 1e-4, l.attack, l.attack + l.decay, t));
+const envAt = (l, t) => (t < 0 ? 0 : t < l.attack ? (l.peak * t) / l.attack : l.peak * Math.exp((l.attack - t) / fallTime(l.decay)));
 const pitchAt = (l, from, t) => (l.glideTo === undefined ? from : expAt(from, l.glideTo, 0, l.glideTime ?? l.attack + l.decay, t));
 
 function biquad(type, f, q) {
