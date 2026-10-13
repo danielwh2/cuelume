@@ -19,6 +19,14 @@ aims to follow [Semantic Versioning](https://semver.org/).
 
 - `setEnabled(false)` is heard at once: cues already ringing fade within a
   few milliseconds, where they used to play out.
+- The output limiter is gone. No single cue ever reached it, and it held
+  every cue back by 6 ms. The 3.2 dB it added is folded into the output, so
+  cues are as loud as before, and a soft clip with no delay catches cues
+  that stack.
+- The room and the noise are the same on every page load and at every
+  sample rate. They used to be drawn at random per page, which moved a
+  ringing cue such as `ready` by a few dB from one load to the next and
+  could lean it left or right.
 
 ## [0.2.5] - 2026-10-13
 

@@ -38,14 +38,8 @@ const audioParam = () => ({
   },
 });
 
-function compressor(node) {
-  return Object.assign(node, {
-    threshold: audioParam(),
-    knee: audioParam(),
-    ratio: audioParam(),
-    attack: audioParam(),
-    release: audioParam(),
-  });
+function waveShaper(node) {
+  return Object.assign(node, { curve: null, oversample: "none" });
 }
 
 // A Web Audio stand-in that records when each source starts and stops, and every pitch that glides.
@@ -80,8 +74,8 @@ function recordingContext() {
     createConvolver() {
       return Object.assign(new Node(), { buffer: null, normalize: true });
     }
-    createDynamicsCompressor() {
-      return compressor(new Node());
+    createWaveShaper() {
+      return waveShaper(new Node());
     }
     createDelay() {
       return Object.assign(new Node(), { delayTime: audioParam() });
@@ -743,7 +737,7 @@ test("invalid names and AudioContext failures are silent", async (context) => {
 test("volume is clamped and one boosted output bus is reused", async (context) => {
   context.after(restoreGlobals);
   const gains = [];
-  const compressors = [];
+  const clips = [];
 
   class AudioNodeStub {
     constructor(name) {
@@ -770,9 +764,9 @@ test("volume is clamped and one boosted output bus is reused", async (context) =
     createConvolver() {
       return Object.assign(new AudioNodeStub("room"), { buffer: null, normalize: true });
     }
-    createDynamicsCompressor() {
-      const node = compressor(new AudioNodeStub("compressor"));
-      compressors.push(node);
+    createWaveShaper() {
+      const node = waveShaper(new AudioNodeStub("clip"));
+      clips.push(node);
       return node;
     }
     createOscillator() {
@@ -826,15 +820,26 @@ test("volume is clamped and one boosted output bus is reused", async (context) =
     [0.5, 0.25, 0.5, 0.5].map((volume) => RECIPES.tap.masterGain * volume),
   );
   assert.ok(output.gain.value > 1);
-  assert.equal(compressors.length, 1);
-  // under 40 Hz is cut before the limiter, so deep notes don't spend its headroom
   const [subsonic] = output.connections;
   assert.equal(subsonic.name, "filter");
   assert.equal(subsonic.type, "highpass");
   assert.ok(subsonic.frequency.value >= 30 && subsonic.frequency.value <= 50);
-  assert.deepEqual(subsonic.connections, [compressors[0]]);
-  assert.equal(compressors[0].connections.length, 1);
-  assert.equal(compressors[0].connections[0].name, "destination");
+  assert.equal(clips.length, 1);
+  const [clip] = clips;
+  assert.deepEqual(subsonic.connections, [clip]);
+  assert.equal(clip.connections.length, 1);
+  assert.equal(clip.connections[0].name, "destination");
+
+  const { CLIP_KNEE } = await import("../dist/audio/output.js");
+  assert.equal(clip.oversample, "none");
+  const inputAt = (i) => (2 * i) / (clip.curve.length - 1) - 1;
+  clip.curve.forEach((out, i) => {
+    const input = inputAt(i);
+    if (Math.abs(input) <= CLIP_KNEE) assert.ok(Math.abs(out - input) < 1e-6, `${input} passes untouched`);
+    else assert.ok(Math.abs(out) < Math.abs(input) && Math.abs(out) >= CLIP_KNEE, `${input} is eased down`);
+    if (i > 0) assert.ok(out >= clip.curve[i - 1], "the curve never folds back");
+  });
+  assert.ok(clip.curve.at(-1) < 1 && clip.curve[0] > -1);
 });
 
 test("every cue renders, deprecated names play, and every keystroke varies within bounds", async (context) => {
@@ -861,8 +866,8 @@ test("every cue renders, deprecated names play, and every keystroke varies withi
     createConvolver() {
       return Object.assign(new AudioNodeStub(), { buffer: null, normalize: true });
     }
-    createDynamicsCompressor() {
-      return compressor(new AudioNodeStub());
+    createWaveShaper() {
+      return waveShaper(new AudioNodeStub());
     }
     createOscillator() {
       return Object.assign(new AudioNodeStub(), {
@@ -1047,9 +1052,9 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
     createConvolver() {
       return Object.assign(new AudioNodeStub(), { buffer: null, normalize: true });
     }
-    createDynamicsCompressor() {
+    createWaveShaper() {
       masters.pop(); // the gain just created was the shared output bus, not a master
-      return compressor(new AudioNodeStub());
+      return waveShaper(new AudioNodeStub());
     }
     createOscillator() {
       const frequency = audioParam();
@@ -1632,14 +1637,14 @@ test("every play rings into one shared room, and a finished play lets go of it",
   class RoomContext {
     state = "running";
     currentTime = 0;
-    sampleRate = 8000;
+    sampleRate = 48000;
     destination = new AudioNodeStub("destination");
     createGain() {
       const names = ["output", "master", "send"];
       return Object.assign(new AudioNodeStub(names[gainCount++] ?? "layer-gain"), { gain: audioParam() });
     }
-    createDynamicsCompressor() {
-      return compressor(new AudioNodeStub("limiter"));
+    createWaveShaper() {
+      return waveShaper(new AudioNodeStub("clip"));
     }
     createConvolver() {
       return Object.assign(new AudioNodeStub("room"), { buffer: null, normalize: true });
@@ -1677,7 +1682,7 @@ test("every play rings into one shared room, and a finished play lets go of it",
   const walls = send.connections[0];
   assert.deepEqual(walls.connections, [room]);
   assert.deepEqual(room.connections, [output]);
-  assert.deepEqual(output.connections[0].connections, [node("limiter")]);
+  assert.deepEqual(output.connections[0].connections, [node("clip")]);
   // success lands, so it rings into the room more than a tap does
   assert.equal(RECIPES.success.room, LANDED);
   assert.ok(send.gain.value > 0.05 * LANDED && send.gain.value < 0.1 * LANDED);
@@ -1707,4 +1712,32 @@ test("every play rings into one shared room, and a finished play lets go of it",
   play("tap");
   play("type");
   assert.equal(made.filter((n) => n.name === "room").length, rooms);
+
+  const reloaded = await import(`../dist/audio/engine.js?reloaded=${Date.now()}`);
+  reloaded.play("success");
+  const [firstRoom, secondRoom] = made.filter((n) => n.name === "room");
+  for (const channel of [0, 1]) assert.deepEqual(secondRoom.buffer.getChannelData(channel), firstRoom.buffer.getChannelData(channel));
+  const noises = made.filter((n) => n.name === "noise").map((n) => n.buffer);
+  assert.notEqual(noises.at(-1), noises[0]);
+  assert.deepEqual(noises.at(-1).getChannelData(0), noises[0].getChannelData(0));
+});
+
+test("the room is the same room at every sample rate", async () => {
+  const { fillRoom, ROOM_SEEDS, ROOM_SECONDS } = await import("../dist/audio/output.js");
+  const returnAt = (rate, hertz) => {
+    const impulse = new Float32Array(Math.floor(ROOM_SECONDS * rate));
+    fillRoom(impulse, rate, ROOM_SEEDS[0]);
+    let real = 0, imaginary = 0;
+    impulse.forEach((x, i) => {
+      real += x * Math.cos((2 * Math.PI * hertz * i) / rate);
+      imaginary += x * Math.sin((2 * Math.PI * hertz * i) / rate);
+    });
+    return 10 * Math.log10(real * real + imaginary * imaginary);
+  };
+  for (const hertz of [196, 392, 523.25, 783.99, 880, 1318.51]) {
+    for (const rate of [44100, 96000]) {
+      const off = returnAt(rate, hertz) - returnAt(48000, hertz);
+      assert.ok(Math.abs(off) < 0.25, `${hertz} Hz returns ${off.toFixed(2)} dB off at ${rate} Hz`);
+    }
+  }
 });

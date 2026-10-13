@@ -23,7 +23,7 @@ dependencies to install: the library stays at zero.
 | `src/sounds/{mech,bubble,press}.ts` | The same fourteen cues in other materials |
 | `src/sounds/context.ts` | How a cue bends to emphasis, key, input, direction, cadence |
 | `src/sounds/themes.ts` | The theme registry |
-| `src/audio/output.ts` | The shared output bus, limiter, and room |
+| `src/audio/output.ts` | The shared output bus, soft clip, and room |
 | `src/audio/render.ts` | Turning one shaped recipe into Web Audio nodes |
 | `src/audio/engine.ts` | Playback state and the public API (`play`, `press`, `release`, …) |
 | `src/interactions/bind.ts` | The `data-cuelume-*` declarative bindings |
@@ -45,6 +45,20 @@ dependencies to install: the library stays at zero.
 - **Nothing centred above 5 kHz**, sines only for tones, and no audible
   pitch slides outside `bubble`. The tests enforce this; read them before
   tuning a cue.
+- **The room and the noise are seeded**, so every page load and
+  `scripts/sound.mjs` play the same ones. The room is written as 48,000
+  reflections a second and placed in time, so every sample rate gets the
+  same room. `ROOM_SEEDS` in `src/audio/output.ts` is the pair, out of 8,000
+  candidates, that keeps every cue at every emphasis within 0.4 dB of its
+  level in the average room and within 0.4 dB left to right. Changing the
+  room's length, predelay or decay changes what a seed sounds like, so the
+  seeds are chosen again (`test/levels.test.mjs` fails when a cue leans).
+- **No limiter on the output.** A `DynamicsCompressorNode` delays everything
+  by 6 ms and adds a fixed gain, 1.451 at the settings cuelume used
+  (threshold -8, knee 6, ratio 12, from Chromium's makeup formula).
+  `OUTPUT_GAIN` is the old 4 times that. The soft clip passes anything under
+  `CLIP_KNEE` untouched; the loudest single cue, struck hardest, peaked at
+  0.50 over 48 takes. `test/levels.test.mjs` fails if a cue reaches the knee.
 - Behaviour-preserving refactors keep the public entries (`cuelume`,
   `cuelume/themes`) unchanged. Tests import from wherever the code lives,
   so move their imports with it and leave no re-export behind.

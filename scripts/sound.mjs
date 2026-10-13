@@ -7,8 +7,8 @@
 //
 // Web Audio's half of src/audio/render.ts and output.ts, done by hand: the same envelopes, glides, RBJ
 // biquads (Web Audio's formulas), room, output gain and subsonic cut. Which layers play, and every
-// constant, come from the built engine. It skips the limiter and the per-play strike, so a cue renders
-// the same every time. Noise is seeded.
+// constant, come from the built engine. It skips the soft clip, which no single cue reaches, and the
+// per-play strike, so a cue renders the same every time. Noise is seeded.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -17,22 +17,14 @@ export const { THEMES } = await import(new URL("dist/sounds/themes.js", ROOT));
 const { shapeFor } = await import(new URL("dist/sounds/context.js", ROOT));
 const { FLAT_Q } = await import(new URL("dist/sounds/layers.js", ROOT));
 const { layersFor, SOURCE_STOP_PADDING: PAD } = await import(new URL("dist/audio/render.js", ROOT));
-const { OUTPUT_GAIN, SUBSONIC_HZ, ROOM_SECONDS, ROOM_PREDELAY, ROOM_LOWPASS, ROOM_DECAY_DB, ROOM_SEND } = await import(
+const { OUTPUT_GAIN, SUBSONIC_HZ, NOISE_SECONDS, ROOM_SECONDS, ROOM_LOWPASS, ROOM_SEND, ROOM_SEEDS, seeded, fillNoise, fillRoom } = await import(
   new URL("dist/audio/output.js", ROOT)
 );
 
 export const SR = 48000;
 
-/** A small seeded generator (mulberry32), so a render is the same every run. */
-function random(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 2 ** 32;
-  };
-}
+const NOISE = new Float32Array(NOISE_SECONDS * SR);
+fillNoise(NOISE);
 const seedOf = (text) => [...text].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619), 2166136261);
 
 // Web Audio's exponentialRamp: v0 * (v1/v0)^((t-t0)/(t1-t0))
@@ -65,6 +57,7 @@ function filter(x, k) {
 function addLayer(out, l, rand) {
   const start = Math.round((l.offset ?? 0) * SR), n = Math.round((l.attack + l.decay + PAD) * SR);
   const from = l.kind === "tone" ? l.frequency : l.filterFrequency;
+  const noiseFrom = Math.floor(rand() * NOISE.length);
   let phase = 0, x1 = 0, x2 = 0, y1 = 0, y2 = 0, k = null;
   for (let i = 0; i < n && start + i < out.length; i++) {
     const t = i / SR, g = envAt(l, t);
@@ -73,25 +66,18 @@ function addLayer(out, l, rand) {
       out[start + i] += g * Math.sin(phase);
     } else {
       if (i % 32 === 0) k = biquad(l.filterType, pitchAt(l, from, t), l.filterQ ?? 1);
-      const x = rand() * 2 - 1, y = k[0] * x + k[1] * x1 + k[2] * x2 - k[3] * y1 - k[4] * y2;
+      const x = NOISE[(noiseFrom + i) % NOISE.length], y = k[0] * x + k[1] * x1 + k[2] * x2 - k[3] * y1 - k[4] * y2;
       x2 = x1; x1 = x; y2 = y1; y1 = y; out[start + i] += g * y;
     }
   }
 }
 
-/** The engine's room for one channel: noise dying ROOM_DECAY_DB over ROOM_SECONDS, at unit energy, through the walls. */
-function roomFor(channel) {
-  const rand = random(1000 + channel), n = Math.floor(ROOM_SECONDS * SR), fall = (ROOM_DECAY_DB / 20) * Math.LN10, d = new Float64Array(n);
-  let energy = 0;
-  for (let i = 0; i < n; i++) {
-    const t = i / SR;
-    d[i] = t < ROOM_PREDELAY ? 0 : (rand() * 2 - 1) * Math.exp((-fall * t) / ROOM_SECONDS);
-    energy += d[i] * d[i];
-  }
-  for (let i = 0; i < n; i++) d[i] /= Math.sqrt(energy);
-  return filter(d, biquad("lowpass", ROOM_LOWPASS, FLAT_Q));
+function roomFor(seed) {
+  const impulse = new Float32Array(Math.floor(ROOM_SECONDS * SR));
+  fillRoom(impulse, SR, seed);
+  return filter(impulse, biquad("lowpass", ROOM_LOWPASS, FLAT_Q));
 }
-const ROOMS = [roomFor(0), roomFor(1)];
+const ROOMS = ROOM_SEEDS.map(roomFor);
 
 function convolve(x, h) {
   let n = 1;
@@ -137,7 +123,7 @@ export function render(theme, cue, { emphasis = "normal", part = "both", step = 
   if (layers.length === 0) return new Float64Array(0);
   const end = Math.max(...layers.map((l) => l.offset + l.attack + l.decay + PAD)) + ROOM_SECONDS + 0.05;
   const dry = new Float64Array(Math.ceil(end * SR));
-  const rand = random(seedOf(`${theme}.${cue}.${emphasis}.${part}.${seed}`));
+  const rand = seeded(seedOf(`${theme}.${cue}.${emphasis}.${part}.${seed}`));
   for (const l of layers) addLayer(dry, l, rand);
   const g = recipe.masterGain * OUTPUT_GAIN, send = ROOM_SEND * (recipe.room ?? 1);
   const wet = convolve(dry, ROOMS[channel]);
