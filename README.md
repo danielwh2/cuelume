@@ -48,6 +48,8 @@ bind();
 
 Leave the attribute value empty to use its default cue, or set it to any cue name. When marked elements nest, the innermost one decides.
 
+A marked control sounds as it goes down and lets go as it comes up. With a mouse, the press plays on `pointerdown` and the release on the `click` that follows. Touch and pen play both on lift, so a scroll that starts on a button stays silent. Enter or Space on a focused control plays both at once. A press that never becomes a click, because the pointer slid away or was cancelled, gets no release. Only themes with a release make the let-go audible; `press` is the first.
+
 Outcome and progress cues follow what your app is actually doing, so play them from code:
 
 ```ts
@@ -148,12 +150,13 @@ Never play a cue per streamed token, per tool call inside an agent run, or on ho
 - Holding Backspace or Delete keeps playing as it deletes, and stops once there is nothing left to delete. Deleting a word or line with Option, Cmd, or Ctrl plays too.
 - Modifier keys, arrows, shortcuts like Cmd+C, other held keys, and IME composition are ignored.
 - Fast typing plays at most one sound every 40ms, and every keystroke lands at a slightly different pitch and weight, so a sentence never sounds like one key repeated.
+- A key that played lets go on `keyup`, so in `press` every keystroke lands and lifts like a real keycap.
 
 ## Selection
 
 A native `<select data-cuelume-select>` plays when its value changes, not when it opens. Marked radio and checkbox inputs work the same way.
 
-A custom option or menu item plays on `click`. A menu item built correctly fires `click` on Enter and Space too, so keyboard selection gets the same cue.
+A custom option or menu item plays like any other marked control. A menu item built correctly fires `click` on Enter and Space too, so keyboard selection gets the same cue.
 
 ## Counting
 
@@ -178,6 +181,7 @@ The same cue bends to how the interaction happened. Cuelume reads this from the 
 | `navigate` | `direction`, from `play()`       | `back` plays the whoosh falling instead of rising. |
 | `toggle`   | Which way it switched              | Switching off plays its glides backwards: `default` and `mech` knock upward, `bubble`'s cork sinks. |
 | `count`    | `duration` and `direction`, from `play()` | The roll stretches to the animation; `back` falls. |
+| `tap`, `open` | How quickly it repeats | In `press`, repeats less than a second apart walk the note up three steps and round again; tap goes C, E, A. A pause starts over. |
 
 Every change is small and bounded, so a cue always sounds like itself. When there's no context, as with a plain `play()` call, the cue plays as normal.
 
@@ -210,7 +214,7 @@ Context comes from the current event and the timing of recent plays on the same 
 
 ## Themes
 
-Every cue comes in four finished materials. `default` is warm: glass, wood, air, and soft mallets. `mech` is dry and precise: a shutter click, a ratchet detent, a latch, struck metal. `bubble` is playful, and every cue is its own gesture: a knock, a drip, a cork, a gulp, a kalimba, a zip. `press` is one premium switch: every interaction is a crisp click over the knock of whatever it moves, and tap lets its body ring like a trackpad under a finger. Outcomes are not touched, so they do not click: success, error, warning, ready and attention are that warm note on its own, with a chord that says what happened, and `loading` is one soft, low note that swells and fades. Whatever the theme, every cue is one sound: it strikes once. All four have the same fourteen cues, context, and emphasis, and they're level-matched, so switching changes the material, not the volume.
+Every cue comes in four finished materials. `default` is warm: glass, wood, air, and soft mallets. `mech` is dry and precise: a shutter click, a ratchet detent, a latch, struck metal. `bubble` is playful, and every cue is its own gesture: a knock, a drip, a cork, a gulp, a kalimba, a zip. `press` is a premium trackpad: tap clicks over a deep C that swells in and rings for about a second, lets go with a lighter click, and quick taps walk up a chord. Keys land and lift like real keycaps. Its outcomes are not touched, so they do not click: success, error, warning, ready and attention are that deep note on its own, with a chord that says what happened. Whatever the theme, a press strikes at once, and so does its release. All four have the same fourteen cues, context, and emphasis, and they're matched by how loud they sound, not by their signal level, so switching changes the material, not the volume.
 
 ```ts
 import { play, setTheme } from "cuelume";
@@ -229,7 +233,7 @@ play("select", { theme: "bubble" }); // one playful moment; the theme stays defa
 
 `setTheme` applies to sounds played after the call. The `theme` option and `data-cuelume-theme` (on an element or any ancestor; the innermost wins) apply to one play and leave the active theme alone. Unknown names are ignored, and like volume, the choice isn't stored.
 
-`default` and `mech` sit in a calm register for all-day use. Reach for `bubble` when a product, or one moment in it, should feel playful, and `press` when it should feel like touching hardware: clicky, deep and precise.
+`default` and `mech` sit in a calm register for all-day use. Reach for `bubble` when a product, or one moment in it, should feel playful, `press` when it should feel like touching hardware: clicky, deep and precise.
 
 `press` is modelled on the trackpad and keycap sounds in DawoodUI's Artasaka preview.
 
@@ -252,10 +256,10 @@ Cuelume does not follow `prefers-reduced-motion`. That setting is about motion. 
 ## API
 
 ```ts
-import { play, bind, setEnabled, setVolume, setTheme, sounds, themes, type SoundName, type Emphasis, type ThemeName, type PlayOptions } from "cuelume";
+import { play, press, release, bind, setEnabled, setVolume, setTheme, sounds, themes, type SoundName, type Emphasis, type ThemeName, type PlayOptions } from "cuelume";
 ```
 
-- **`play(name?: SoundName, options?: PlayOptions)`**: play a cue immediately. Defaults to `"tap"`. Options apply to this play only:
+- **`play(name?: SoundName, options?: PlayOptions)`**: play a cue immediately. Defaults to `"tap"`. A cue with a release plays it 90 ms after the press, as a quick click would. Options apply to this play only:
   - `volume?: number`, clamped to `0–1`.
   - `emphasis?: "subtle" | "normal" | "strong"`.
   - `direction?: "forward" | "back"`: shapes `select`; `back` plays `navigate`, `toggle`, and `count` backwards.
@@ -263,6 +267,12 @@ import { play, bind, setEnabled, setVolume, setTheme, sounds, themes, type Sound
   - `input?: "mouse" | "touch" | "pen" | "keyboard"`: shapes `tap`.
   - `theme?: ThemeName`: the material for this play only.
   - `duration?: number`: how long a `count` runs, in milliseconds, clamped to `300–2000`.
+- **`press(name?: SoundName, options?: PlayOptions)`** and **`release(name?: SoundName)`**: the two halves of `play`, for a custom control that doesn't use `bind()`. Call `press` as the gesture goes down and `release` with the same cue as it lifts; the release keeps its press's theme and emphasis. A second `release`, or one with no press waiting, plays nothing.
+
+  ```ts
+  key.addEventListener("pointerdown", () => press("tap"));
+  key.addEventListener("pointerup", () => release("tap"));
+  ```
 - **`bind(root?: ParentNode)`**: delegate all `data-cuelume-*` interactions under `root` (defaults to the whole document). Idempotent, and handles elements added later.
 - **`setEnabled(enabled: boolean)`**: enable or disable future playback. Does not persist the preference or stop sounds already playing.
 - **`setVolume(volume: number)`**: set the global volume for future playback, clamped to `0–1`. Non-finite values are ignored and preferences are not persisted.
@@ -299,9 +309,9 @@ The old bindings also keep working until 1.0:
 
 ## Defaults that behave
 
-- **One cue per action.** An event plays at most one cue, even with nested marked elements or several bound roots.
+- **One cue per action.** An event plays at most one cue, even with nested marked elements or several bound roots. A press and its release are one cue.
 - **Keyboard included.** Click bindings follow native activation, so Enter and Space on a button play the same cue as a click.
-- **Audible without clipping.** One shared boosted output stage keeps sounds clear, with native compression protecting overlapping cues.
+- **Audible without clipping.** One shared boosted output stage keeps sounds clear, with native compression protecting overlapping cues. Everything under 40 Hz is cut before it, so deep notes never spend its headroom on what nobody hears.
 - **Struck, not played back.** Tones are modelled on real bars: each overtone dies faster the higher it is, and a brief mallet contact starts the note. Every play of a frequent cue is one strike, a little harder or softer than the last, so a harder one is louder and brighter together and no two sound identical. Outcome cues play the same every time, so their meaning never blurs.
 - **One faint room.** Every cue rings very faintly into one shared, short stereo room (about 22 dB down), which places it in the space around the listener rather than inside their head. `success` and `ready` ring into it a little more.
 - **One lazy `AudioContext`.** Shared across all sounds, created on first use.
@@ -343,6 +353,15 @@ Cuelume also ships as a Claude Code plugin with two cues: `ready` when a turn of
 ```
 
 `/cuelume bubble` switches the theme and plays it, and `/cuelume off` silences it. See [claude-code/README.md](claude-code/README.md).
+
+## Development
+
+`npm run check` runs the typecheck, build, and test suite. See
+[examples](examples/README.md) for runnable starting points,
+[CONTRIBUTING.md](CONTRIBUTING.md) for the layout and the rules that keep
+the palette coherent, and [CHANGELOG.md](CHANGELOG.md) for what changed.
+Tooling can read every theme's recipes through the `cuelume/themes` subpath
+export.
 
 ## License
 

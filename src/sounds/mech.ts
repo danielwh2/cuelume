@@ -4,20 +4,21 @@
  * ring beyond a struck part's own, and nothing harsh, industrial,
  * retro-computer, or sci-fi.
  *
- * Level-matched to the default palette on momentary loudness (the loudest
- * 30 ms), so switching themes changes the material, not the volume.
+ * Level-matched to the default palette on perceived loudness (K-weighted, the
+ * loudest 100 ms), so switching themes changes the material, not the volume.
  *
  * Arranged for emphasis like the default palette: layers marked from
  * "normal" are ornament that subtle leaves out, and each cue has a layer only
  * strong plays.
  */
 
-import { BAR, contact, knock, struck, type SoundName, type SoundRecipe } from "./recipes.js";
+import { BAR, contact, knock, struck, type SoundRecipe } from "./layers.js";
+import type { SoundName } from "./recipes.js";
 
 export const MECH = {
   /** A machined click, like a camera's shutter button, over the short knock of its housing. */
   tap: {
-    masterGain: 0.661,
+    masterGain: 0.964,
     layers: [
       { kind: "noise", filterType: "bandpass", filterFrequency: 2650, filterQ: 1.5, attack: 0.001, decay: 0.004, peak: 0.08 },
       knock(455, 0.012, 0.02),
@@ -28,7 +29,7 @@ export const MECH = {
   },
   /** A tight low-profile switch: shorter and drier than a keycap, almost no body. */
   type: {
-    masterGain: 0.421,
+    masterGain: 0.484,
     layers: [
       { kind: "noise", filterType: "bandpass", filterFrequency: 3000, filterQ: 1.2, attack: 0.001, decay: 0.003, peak: 0.1 },
       { from: "normal", kind: "noise", filterType: "bandpass", filterFrequency: 2150, filterQ: 5, attack: 0.001, decay: 0.008, peak: 0.18 },
@@ -39,7 +40,7 @@ export const MECH = {
   },
   /** A ratchet detent: a precision dial clicking over one tooth, with a faint ring of the metal. */
   select: {
-    masterGain: 0.495,
+    masterGain: 0.295,
     layers: [
       { from: "normal", kind: "noise", filterType: "bandpass", filterFrequency: 3650, filterQ: 3, attack: 0.001, decay: 0.003, peak: 0.2 },
       { kind: "noise", filterType: "bandpass", filterFrequency: 1500, filterQ: 8, attack: 0.001, decay: 0.009, peak: 0.35 },
@@ -49,7 +50,7 @@ export const MECH = {
   },
   /** A toggle switch's throw: the lever snaps over centre with the knock of its housing. */
   toggle: {
-    masterGain: 0.294,
+    masterGain: 0.293,
     layers: [
       { kind: "noise", filterType: "bandpass", filterFrequency: 1650, filterQ: 2, attack: 0.001, decay: 0.004, peak: 0.14 },
       knock(330, 0.025, 0.04),
@@ -59,7 +60,7 @@ export const MECH = {
   },
   /** A latch releasing: the catch lets go as the bolt slides back, in one motion. */
   open: {
-    masterGain: 0.854,
+    masterGain: 0.869,
     layers: [
       { kind: "noise", filterType: "bandpass", filterFrequency: 2150, filterQ: 3, attack: 0.001, decay: 0.004, peak: 0.16 },
       { kind: "noise", filterType: "bandpass", filterFrequency: 1160, glideTo: 2150, glideTime: 0.05, filterQ: 2, attack: 0.02, decay: 0.03, peak: 0.08 },
@@ -69,7 +70,7 @@ export const MECH = {
   },
   /** A latch catching: the bolt slides home into the catch, in one motion. */
   close: {
-    masterGain: 0.627,
+    masterGain: 0.96,
     layers: [
       { kind: "noise", filterType: "bandpass", filterFrequency: 2150, glideTo: 1080, glideTime: 0.04, filterQ: 2, attack: 0.015, decay: 0.025, peak: 0.04 },
       { kind: "noise", filterType: "bandpass", filterFrequency: 1000, filterQ: 4, attack: 0.001, decay: 0.01, peak: 0.22 },
@@ -79,7 +80,7 @@ export const MECH = {
   },
   /** One dry struck bar, F, C and A at once, spread so no two notes rub, hit with something hard: a short chord, not a bell. */
   success: {
-    masterGain: 0.597,
+    masterGain: 0.662,
     layers: [
       contact(2200, 0.05),
       ...struck(698.46, 0.1, 0.03, BAR),
@@ -90,7 +91,7 @@ export const MECH = {
   },
   /** One firm low knock with a dull D in it and the F a tenth above, like a handle that is locked. */
   error: {
-    masterGain: 0.553,
+    masterGain: 0.59,
     layers: [
       { kind: "noise", filterType: "bandpass", filterFrequency: 430, filterQ: 4, attack: 0.001, decay: 0.02, peak: 0.3 },
       ...struck(293.66, 0.06, 0.045, BAR),
@@ -101,7 +102,7 @@ export const MECH = {
   },
   /** A short carriage slide, rising as it passes. */
   navigate: {
-    masterGain: 0.723,
+    masterGain: 0.804,
     layers: [
       { kind: "noise", filterType: "bandpass", filterFrequency: 750, glideTo: 1400, glideTime: 0.13, filterQ: 1.8, attack: 0.05, decay: 0.096, peak: 0.1 },
       { from: "normal", kind: "noise", filterType: "bandpass", filterFrequency: 2500, filterQ: 4, attack: 0.001, decay: 0.003, peak: 0.1 },
@@ -110,7 +111,7 @@ export const MECH = {
   },
   /** One dry struck fifth, D and A: between success and error. */
   warning: {
-    masterGain: 0.504,
+    masterGain: 0.484,
     layers: [
       contact(2000, 0.05),
       ...struck(587.33, 0.08, 0.04, BAR),
@@ -120,7 +121,7 @@ export const MECH = {
   },
   /** A small motor spinning up and winding down: one soft, low whirr over about a second. */
   loading: {
-    masterGain: 0.212,
+    masterGain: 0.223,
     layers: [
       { kind: "noise", filterType: "bandpass", filterFrequency: 500, filterQ: 1, attack: 0.35, decay: 0.7, peak: 0.03 },
       { kind: "tone", waveform: "sine", frequency: 233.08, attack: 0.35, decay: 0.7, peak: 0.015 },
@@ -130,7 +131,7 @@ export const MECH = {
   },
   /** One dry struck bar, lower than success: a result is there. */
   ready: {
-    masterGain: 0.434,
+    masterGain: 0.546,
     layers: [
       contact(2000, 0.05),
       ...struck(523.25, 0.16, 0.05, BAR),
@@ -139,7 +140,7 @@ export const MECH = {
   },
   /** One metal bell, A and E struck together, ringing longer than the rest. */
   attention: {
-    masterGain: 0.414,
+    masterGain: 0.481,
     layers: [
       contact(2500, 0.04),
       ...struck(880, 0.2, 0.04, BAR),
@@ -149,7 +150,7 @@ export const MECH = {
   },
   /** An odometer drum turning: one dry slide that rises with the count and lasts as long as the roll. */
   count: {
-    masterGain: 0.72,
+    masterGain: 0.654,
     layers: [
       { stretch: true, kind: "noise", filterType: "bandpass", filterFrequency: 500, glideTo: 900, glideTime: 0.6, filterQ: 2, attack: 0.1, decay: 0.6, peak: 0.06 },
       { stretch: true, from: "normal", kind: "noise", filterType: "bandpass", filterFrequency: 1900, glideTo: 3300, glideTime: 0.6, filterQ: 4, attack: 0.1, decay: 0.5, peak: 0.03 },

@@ -30,7 +30,12 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./themes": {
+      "types": "./dist/sounds/themes.d.ts",
+      "import": "./dist/sounds/themes.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
@@ -38,10 +43,14 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
     "test": "npm run build && node --test \"test/*.test.mjs\"",
+    "test:browser": "npm run build && CUELUME_BROWSER_REQUIRED=1 node --test test/browser.test.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {
+    "playwright-core": "^1.64.0",
     "typescript": "^5.6.0"
   }
 }

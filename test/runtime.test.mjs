@@ -253,7 +253,7 @@ test("every layer keeps the register: nothing above 5 kHz, sines only, and outsi
     for (const [cue, recipe] of Object.entries(cues)) {
       // a room is for results that land
       if (recipe.room) assert.ok(cue === "success" || cue === "ready", `${theme} ${cue} rings into the room`);
-      for (const layer of recipe.layers) {
+      for (const layer of [...recipe.layers, ...(recipe.release ?? [])]) {
         const centre = Math.max(layer.kind === "tone" ? layer.frequency : layer.filterFrequency, layer.glideTo ?? 0);
         assert.ok(centre <= 5000, `${theme} ${cue}: ${centre} Hz`);
         if (layer.kind === "tone") {
@@ -273,7 +273,7 @@ test("every layer keeps the register: nothing above 5 kHz, sines only, and outsi
 });
 
 test("a struck note's higher modes die sooner, and none rises past the register", async () => {
-  const { struck, BAR, MALLET } = await import("../dist/sounds/recipes.js");
+  const { struck, BAR, MALLET } = await import("../dist/sounds/layers.js");
   for (const material of [BAR, MALLET]) {
     for (const frequency of [220, 880, 1318.51]) {
       const modes = struck(frequency, 0.4, 0.02, material);
@@ -289,11 +289,20 @@ test("a struck note's higher modes die sooner, and none rises past the register"
   assert.ok(struck(220, 0.4, 0.02, BAR, { from: "strong" }).every((mode) => mode.from === "strong"));
 });
 
-test("every cue is one sound: all its layers strike together, in every theme", async () => {
+test("a press strikes at once and so does its release; only notes walk, and only where a walk means nothing", async () => {
   const { THEMES } = await import("../dist/sounds/themes.js");
+  const OUTCOMES = ["success", "error", "warning", "ready", "attention", "loading", "count"];
   for (const [theme, cues] of Object.entries(THEMES)) {
     for (const [cue, recipe] of Object.entries(cues)) {
-      for (const layer of recipe.layers) assert.equal(layer.offset ?? 0, 0, `${theme} ${cue} strikes twice`);
+      for (const layer of [...recipe.layers, ...(recipe.release ?? [])]) assert.equal(layer.offset ?? 0, 0, `${theme} ${cue} strikes twice`);
+      // nothing is pressed for an outcome, so nothing lets go
+      if (OUTCOMES.includes(cue)) assert.equal(recipe.release, undefined, `${theme} ${cue} lets go`);
+      if (recipe.release) assert.ok(recipe.release.length > 0, `${theme} ${cue} has an empty release`);
+      if (!recipe.walk) continue;
+      // a walk moves notes, so it needs one, and never where pitch already means something
+      assert.ok(!OUTCOMES.includes(cue) && cue !== "select", `${theme} ${cue} walks`);
+      assert.ok(recipe.layers.some((layer) => layer.note), `${theme} ${cue} walks with no note`);
+      assert.equal(recipe.walk[0], 0, `${theme} ${cue}'s walk starts on its note`);
     }
   }
 });
@@ -480,6 +489,101 @@ test("a cue plays one voice at a time: a new play releases the last, other cues 
   assert.equal(other.gain.ramps.length, 0);
 });
 
+test("a press lets go: play() releases 90 ms later, a binding splits the two, and quick repeats walk", async (context) => {
+  context.after(restoreGlobals);
+  context.mock.method(Math, "random", () => 0.5); // no per-play variation, so pitches compare exactly
+  const { Context, log } = recordingContext();
+  const gains = [];
+  class Recording extends Context {
+    createGain() {
+      const gain = super.createGain();
+      gains.push(gain);
+      return gain;
+    }
+  }
+  let clock = 0;
+  setGlobal("performance", { now: () => clock });
+  setGlobal("setTimeout", () => 0);
+  setGlobal("window", { AudioContext: Recording });
+  const { play, playInContext, press: pressCue, release, setTheme } = await import(`../dist/audio/engine.js?gesture=${Date.now()}`);
+  const { THEMES } = await import("../dist/sounds/themes.js");
+  const { arrangement } = await import("../dist/sounds/context.js");
+  play("success"); // builds the shared output first
+  setTheme("press");
+  const { tap } = THEMES.press;
+  const [pressed, released] = [tap.layers, tap.release].map((layers) => arrangement(layers, "normal").length);
+  const sourcesOf = (action) => {
+    const before = log.sources.length;
+    action();
+    return log.sources.slice(before);
+  };
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+
+  // play(): the press now and the release 90 ms later, in one play
+  clock += 5_000;
+  const both = sourcesOf(() => play("tap"));
+  assert.equal(both.length, pressed + released);
+  assert.ok(both.slice(0, pressed).every((source) => source.at === 0));
+  assert.ok(both.slice(pressed).every((source) => near(source.at, 0.09)));
+
+  // a binding: the press alone, then its release the moment the gesture lifts; a second lift finds nothing
+  clock += 5_000;
+  const master = () => gains.findLast((gain) => gain.gain.value === tap.masterGain);
+  assert.equal(sourcesOf(() => playInContext("tap", undefined, {}, "press")).length, pressed);
+  const press = master();
+  const lift = sourcesOf(() => playInContext("tap", undefined, {}, "release"));
+  assert.equal(lift.length, released);
+  assert.ok(lift.every((source) => source.at === 0));
+  assert.equal(press.gain.ramps.length, 0, "a release rings with its press, it doesn't replace it");
+  assert.equal(sourcesOf(() => playInContext("tap", undefined, {}, "release")).length, 0);
+
+  // press() and release() are the same split, for custom controls
+  clock += 5_000;
+  assert.equal(sourcesOf(() => pressCue("tap", { emphasis: "strong" })).length, arrangement(tap.layers, "strong").length);
+  assert.equal(sourcesOf(() => release("tap")).length, arrangement(tap.release, "strong").length, "a release keeps its press's emphasis");
+  assert.equal(sourcesOf(() => release("tap")).length, 0);
+  const { press: exported, release: exportedRelease } = await import("../dist/index.js");
+  assert.equal(typeof exported, "function");
+  assert.equal(typeof exportedRelease, "function");
+
+  // a press that plays nothing still ends the one before it: nothing old is left to let go
+  clock += 5_000;
+  pressCue("tap");
+  assert.equal(sourcesOf(() => pressCue("tap", { volume: 0 })).length, 0);
+  assert.equal(sourcesOf(() => release("tap")).length, 0);
+
+  // a binding names the gesture, so keys that overlap each let go of their own press
+  clock += 5_000;
+  const keyLift = arrangement(THEMES.press.type.release, "normal").length;
+  playInContext("type", undefined, {}, "press", "KeyA");
+  clock += 100;
+  playInContext("type", undefined, {}, "press", "KeyS");
+  assert.equal(sourcesOf(() => playInContext("type", undefined, {}, "release", "KeyA")).length, keyLift);
+  assert.equal(sourcesOf(() => playInContext("type", undefined, {}, "release", "KeyS")).length, keyLift);
+  assert.equal(sourcesOf(() => playInContext("type", undefined, {}, "release", "KeyS")).length, 0);
+
+  // quick taps walk C, E, A and round again; a pause starts over
+  const noteOf = () => sourcesOf(() => play("tap")).find((source) => source.frequency).frequency.value;
+  clock += 5_000;
+  const root = noteOf();
+  const steps = [];
+  for (let i = 0; i < 4; i++) {
+    clock += 300;
+    steps.push(Math.round(12 * Math.log2(noteOf() / root)));
+  }
+  assert.deepEqual(steps, tap.walk.slice(1).concat(tap.walk, tap.walk).slice(0, 4));
+  clock += 1_500;
+  assert.equal(noteOf(), root);
+
+  // a cue with notes lets its last play go over 400 ms, so a walk overlaps
+  clock += 300;
+  const last = master();
+  play("tap");
+  assert.deepEqual(last.gain.ramps, [0.0001]);
+  assert.ok(near(last.gain.rampTimes[0], 0.4));
+  setTheme("default");
+});
+
 test("one strike per play: every layer shares it, harder is louder and brighter, and only cues with vary move", async (context) => {
   context.after(restoreGlobals);
   const { Context, log } = recordingContext();
@@ -493,6 +597,9 @@ test("one strike per play: every layer shares it, harder is louder and brighter,
   }
   setGlobal("setTimeout", () => 0);
   setGlobal("window", { AudioContext: Recording });
+  // plays a second apart, so a cue that walks stays on its first step
+  let clock = 0;
+  setGlobal("performance", { now: () => (clock += 2_000) });
   const { play } = await import(`../dist/audio/engine.js?strike=${Date.now()}`);
   const { THEMES } = await import("../dist/sounds/themes.js");
   const { arrangement } = await import("../dist/sounds/context.js");
@@ -715,7 +822,12 @@ test("volume is clamped and one boosted output bus is reused", async (context) =
   );
   assert.ok(output.gain.value > 1);
   assert.equal(compressors.length, 1);
-  assert.deepEqual(output.connections, [compressors[0]]);
+  // under 40 Hz is cut before the limiter, so deep notes don't spend its headroom
+  const [subsonic] = output.connections;
+  assert.equal(subsonic.name, "filter");
+  assert.equal(subsonic.type, "highpass");
+  assert.ok(subsonic.frequency.value >= 30 && subsonic.frequency.value <= 50);
+  assert.deepEqual(subsonic.connections, [compressors[0]]);
   assert.equal(compressors[0].connections.length, 1);
   assert.equal(compressors[0].connections[0].name, "destination");
 });
@@ -1004,6 +1116,9 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
       }
       return false;
     }
+    matches(selector) {
+      return selector === ":disabled" && this.disabled === true;
+    }
   }
 
   let now = 1_000;
@@ -1276,6 +1391,117 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
   detached.control = Object.assign(new FakeElement(root, "INPUT"), { type: "checkbox", checked: false });
   now += 1_000;
   played(1, () => root.emit("click", detached));
+
+  // ---- a gesture sounds as it goes down and lets go as it lifts ----
+  const tones = (action) => {
+    const before = oscillators.length;
+    action();
+    return oscillators.length - before;
+  };
+  // press's tap: the press carries the note, the release only clicks
+  const trackpad = new FakeElement(root, "BUTTON", { "data-cuelume-tap": "", "data-cuelume-theme": "press" });
+  now += 1_000;
+  assert.ok(tones(() => played(1, () => root.emit("pointerdown", trackpad))) > 0);
+  assert.equal(tones(() => played(1, () => root.emit("click", trackpad))), 0);
+  // touch plays it whole on lift, so a scroll that starts on the button is silent
+  now += 1_000;
+  played(0, () => root.emit("pointerdown", trackpad, { pointerType: "touch" }));
+  assert.ok(tones(() => played(1, () => root.emit("click", trackpad, { pointerType: "touch" }))) > 0);
+  // keyboard activation has no press first, so it plays whole
+  now += 1_000;
+  assert.ok(tones(() => played(1, () => root.emit("click", trackpad, { pointerType: "", detail: 0 }))) > 0);
+  // a cancelled press never lets go, so the next click plays whole; a right button presses nothing
+  now += 1_000;
+  played(1, () => root.emit("pointerdown", trackpad));
+  root.emit("pointercancel", trackpad);
+  now += 1_000;
+  assert.ok(tones(() => played(1, () => root.emit("click", trackpad))) > 0);
+  played(0, () => root.emit("pointerdown", trackpad, { button: 2 }));
+  // a theme with nothing to let go plays the press and stays silent on the click
+  const plainTap = new FakeElement(root, "BUTTON", { "data-cuelume-tap": "" });
+  now += 1_000;
+  played(1, () => root.emit("pointerdown", plainTap));
+  played(0, () => root.emit("click", plainTap));
+
+  // a toggle pressed reads its state before the click changes it: an unchecked box is switching on
+  const pressSinks = (element) => {
+    const before = oscillators.length;
+    now += 1_000;
+    root.emit("pointerdown", element);
+    root.emit("pointercancel", element);
+    const bloop = oscillators[before];
+    return bloop.ramps[0] < bloop.value;
+  };
+  const optIn = Object.assign(new FakeElement(bubbly, "INPUT", { "data-cuelume-toggle": "" }), { type: "checkbox", checked: false });
+  assert.equal(pressSinks(optIn), false);
+  optIn.checked = true;
+  assert.equal(pressSinks(optIn), true);
+  const plan = Object.assign(new FakeElement(bubbly, "INPUT", { "data-cuelume-toggle": "" }), { type: "radio", checked: false });
+  assert.equal(pressSinks(plan), false);
+
+  // a pen presses nothing either: it scrolls like a finger, and its pointerdown does not unlock audio
+  now += 1_000;
+  played(0, () => root.emit("pointerdown", trackpad, { pointerType: "pen" }));
+  assert.ok(tones(() => played(1, () => root.emit("click", trackpad, { pointerType: "pen" }))) > 0);
+  // a disabled control never clicks, so it presses nothing
+  const locked = Object.assign(new FakeElement(root, "BUTTON", { "data-cuelume-tap": "" }), { disabled: true });
+  played(0, () => root.emit("pointerdown", locked));
+  // a press that slid off, with no click and no cancel, is over once a key or another pointer goes down:
+  // the next activation plays whole
+  const slid = new FakeElement(root, "BUTTON", { "data-cuelume-tap": "" });
+  now += 1_000;
+  played(1, () => root.emit("pointerdown", slid));
+  root.emit("keydown", slid, { key: "Enter", code: "Enter" });
+  now += 1_000;
+  played(1, () => root.emit("click", slid, { pointerType: "", detail: 0 }));
+  now += 1_000;
+  played(1, () => root.emit("pointerdown", slid));
+  played(0, () => root.emit("pointerdown", slid, { pointerType: "touch" }));
+  now += 1_000;
+  played(1, () => root.emit("click", slid, { pointerType: "touch" }));
+
+  // a pick is made on the click: one pressed and abandoned moves nothing, so the next is measured from the last made
+  const tabs = new FakeElement(root, "DIV");
+  const [first, second, third] = [0, 1, 2].map(() => new FakeElement(tabs, "BUTTON", { "data-cuelume-select": "" }));
+  now += 1_000;
+  root.emit("pointerdown", first);
+  root.emit("click", first);
+  now += 1_000;
+  root.emit("pointerdown", third);
+  root.emit("pointercancel", third);
+  now += 1_000;
+  assert.ok(firstFilter(() => root.emit("pointerdown", second)) > detentHz);
+  root.emit("click", second);
+  now += 1_000;
+  assert.ok(firstFilter(() => root.emit("pointerdown", first)) < detentHz);
+  root.emit("pointercancel", first);
+
+  // a typed key lets go on keyup, once, and only if its keydown played
+  const keys = new FakeElement(root, "TEXTAREA", { "data-cuelume-type": "", "data-cuelume-theme": "press" });
+  now += 1_000;
+  played(1, () => root.emit("keydown", keys, { key: "a", code: "KeyA" }));
+  played(1, () => root.emit("keyup", keys, { key: "a", code: "KeyA" }));
+  played(0, () => root.emit("keyup", keys, { key: "a", code: "KeyA" }));
+  played(0, () => root.emit("keyup", keys, { key: "b", code: "KeyB" }));
+  now += 1_000;
+  played(0, () => root.emit("keydown", keys, { key: "Shift", code: "ShiftLeft" }));
+  played(0, () => root.emit("keyup", keys, { key: "Shift", code: "ShiftLeft" }));
+  // Shift lifting first renames the key, "A" to "a": it is the same key letting go
+  now += 1_000;
+  played(1, () => root.emit("keydown", keys, { key: "A", code: "KeyA" }));
+  played(1, () => root.emit("keyup", keys, { key: "a", code: "KeyA" }));
+  // keys that overlap, as fast typing does, each let go
+  now += 1_000;
+  played(1, () => root.emit("keydown", keys, { key: "a", code: "KeyA" }));
+  now += 100;
+  played(1, () => root.emit("keydown", keys, { key: "s", code: "KeyS" }));
+  played(1, () => root.emit("keyup", keys, { key: "a", code: "KeyA" }));
+  played(1, () => root.emit("keyup", keys, { key: "s", code: "KeyS" }));
+  // a key lifted after focus left the field is done: it lets go of nothing later
+  now += 1_000;
+  played(1, () => root.emit("keydown", keys, { key: "d", code: "KeyD" }));
+  played(0, () => root.emit("keyup", root, { key: "d", code: "KeyD" }));
+  played(0, () => root.emit("keyup", keys, { key: "d", code: "KeyD" }));
 });
 
 test("every play rings into one shared room, and a finished play lets go of it", async (context) => {
@@ -1337,7 +1563,8 @@ test("every play rings into one shared room, and a finished play lets go of it",
   setGlobal("window", { AudioContext: RoomContext });
 
   const { play } = await import(`../dist/audio/engine.js?room=${Date.now()}`);
-  const { RECIPES, LANDED } = await import("../dist/sounds/recipes.js");
+  const { RECIPES } = await import("../dist/sounds/recipes.js");
+  const { LANDED } = await import("../dist/sounds/layers.js");
   play("success");
 
   const node = (name) => made.find((n) => n.name === name);
@@ -1347,7 +1574,7 @@ test("every play rings into one shared room, and a finished play lets go of it",
   const walls = send.connections[0];
   assert.deepEqual(walls.connections, [room]);
   assert.deepEqual(room.connections, [output]);
-  assert.deepEqual(output.connections, [node("limiter")]);
+  assert.deepEqual(output.connections[0].connections, [node("limiter")]);
   // success lands, so it rings into the room more than a tap does
   assert.equal(RECIPES.success.room, LANDED);
   assert.ok(send.gain.value > 0.05 * LANDED && send.gain.value < 0.1 * LANDED);

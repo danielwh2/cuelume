@@ -9,7 +9,8 @@
  * and context that is missing leaves the canonical sound untouched.
  */
 
-import type { SoundLayer, SoundName } from "./recipes.js";
+import type { SoundLayer } from "./layers.js";
+import type { SoundName } from "./recipes.js";
 
 export type Emphasis = "subtle" | "normal" | "strong";
 export type InputMethod = "mouse" | "touch" | "pen" | "keyboard";

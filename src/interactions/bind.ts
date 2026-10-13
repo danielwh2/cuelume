@@ -10,6 +10,12 @@
  *   data-cuelume-close     → click
  *   data-cuelume-navigate  → click
  *
+ * A cue sounds as the gesture goes down and lets go as it lifts. A mouse
+ * plays the press on pointerdown and the release on the click that follows;
+ * touch and pen play both on lift, so a scroll that starts on a button stays
+ * silent; keyboard activation plays both at once. A typed key presses on
+ * keydown and lets go on keyup.
+ *
  * Deprecated, kept for the v0.3 migration window and removed in 1.0:
  *
  *   data-cuelume-hover     → pointerenter (fine mouse, throttled), plays `select`
@@ -28,7 +34,7 @@
  * beyond the page's memory.
  */
 
-import { playInContext } from "../audio/engine.js";
+import { playInContext, type Part } from "../audio/engine.js";
 import type { Context, Emphasis, InputMethod, KeyRole } from "../sounds/context.js";
 import { resolveSound, type SoundName } from "../sounds/recipes.js";
 import type { ThemeName } from "../sounds/themes.js";
@@ -53,8 +59,12 @@ const handledEvents = new WeakSet<Event>();
 const lastPlayed = { hover: -Infinity, type: -Infinity };
 /** The last selected index per select group, so the next pick knows which way it moved. */
 const lastSelected = new WeakMap<Element, number>();
+/** The element a pointer pressed, waiting for its click to let go. */
+let pressed: Element | null = null;
+/** Keys whose keydown played `type`, waiting for their keyup. By code: lifting Shift first renames a key, "A" to "a". */
+const typed = new Set<string>();
 
-type Match = [element: HTMLElement, attr: string, fallback: SoundName, context?: Context] | null;
+type Match = [element: HTMLElement, attr: string, fallback: SoundName, context?: Context, part?: Part] | null;
 
 function throttled(kind: keyof typeof lastPlayed, gapMs: number): boolean {
   const now = performance.now();
@@ -97,10 +107,10 @@ function inputMethod(event: Event): InputMethod | undefined {
 }
 
 /** 1 when `index` is later in `group` than the last pick, -1 when earlier, else none. */
-function moved(group: Element, index: number): Context["direction"] {
+function moved(group: Element, index: number, keep = true): Context["direction"] {
   const previous = lastSelected.get(group);
   if (!(index >= 0)) return undefined;
-  lastSelected.set(group, index);
+  if (keep) lastSelected.set(group, index);
   if (previous === undefined || previous === index) return undefined;
   return index > previous ? 1 : -1;
 }
@@ -115,7 +125,7 @@ function isChosen(option: Element): boolean {
  * pick in a group starts from the option ARIA marks as chosen: this listener
  * runs in the capture phase, before the app moves that state.
  */
-function siblingDirection(option: HTMLElement): Context["direction"] {
+function siblingDirection(option: HTMLElement, keep = true): Context["direction"] {
   const group = option.parentElement;
   if (!group) return undefined;
   const options = Array.from(group.children).filter((child) => child.hasAttribute("data-cuelume-select"));
@@ -123,17 +133,19 @@ function siblingDirection(option: HTMLElement): Context["direction"] {
     const chosen = options.findIndex(isChosen);
     if (chosen >= 0) lastSelected.set(group, chosen);
   }
-  return moved(group, options.indexOf(option));
+  return moved(group, options.indexOf(option), keep);
 }
 
 /**
- * Which way a toggle is switching, from the state its click finds: 1 on, -1 off.
- * A native checkbox or radio has already changed when its click is dispatched.
- * ARIA state has not: the app flips it in its own handler, after this capture listener.
+ * Which way a toggle is switching: 1 on, -1 off. A native checkbox or radio
+ * has already changed when its click is dispatched, but not on pointerdown,
+ * when a radio can only switch on. ARIA state has changed in neither: the app
+ * flips it in its own handler, after these capture listeners.
  */
-function switched(element: HTMLElement): Context["direction"] {
+function switched(element: HTMLElement, beforeClick = false): Context["direction"] {
   const { type, checked } = element as HTMLInputElement;
-  if (type === "checkbox" || type === "radio") return checked ? 1 : -1;
+  if (type === "radio") return beforeClick || checked ? 1 : -1;
+  if (type === "checkbox") return checked !== beforeClick ? 1 : -1;
   const state = element.getAttribute("aria-checked") ?? element.getAttribute("aria-pressed");
   if (state === "true") return -1;
   return state === "false" ? 1 : undefined;
@@ -166,13 +178,16 @@ function listen(root: ParentNode, eventName: string, find: (event: Event) => Mat
       const found = find(event);
       if (!found) return;
       handledEvents.add(event);
-      const [element, attr, fallback, context = {}] = found;
+      const [element, attr, fallback, context = {}, part] = found;
       const emphasis = element.closest("[data-cuelume-emphasis]")?.getAttribute("data-cuelume-emphasis");
       const theme = element.closest("[data-cuelume-theme]")?.getAttribute("data-cuelume-theme");
       playInContext(
         resolveSound(element.getAttribute(attr)) ?? fallback,
         { emphasis: emphasis as Emphasis, theme: theme as ThemeName },
         context,
+        part,
+        // a key holds its own press, so keys that overlap each let go; a pointer has no code
+        (event as KeyboardEvent).code,
       );
     },
     true,
@@ -189,21 +204,56 @@ export function bind(root?: ParentNode): void {
   if (boundRoots.has(scope)) return;
   boundRoots.add(scope);
 
-  listen(scope, "click", (event) => {
+  /** The marked element an event activates, its attribute, and the control inside a marked label. */
+  const clicked = (event: Event) => {
     if (!(event.target instanceof Element)) return null;
     const element = event.target.closest<HTMLElement>(CLICK_SELECTOR);
     if (!element || !(scope as Node).contains(element)) return null;
-    // A label around its control gets two clicks, its own and the one it forwards
-    // to the control. Only the forwarded one plays, and it reads the control's state.
     const control = element.tagName === "LABEL" ? (element as HTMLLabelElement).control : null;
     const inside = control && element.contains(control) ? control : null;
-    if (inside && event.target !== inside) return null;
+    // a disabled control gets pointer events but never the click that would let go
+    if ((inside ?? element).matches(":disabled")) return null;
     const attr = Object.keys(CLICK_CUES).find((name) => element.hasAttribute(name))!;
-    const selecting = attr === "data-cuelume-select";
-    if (selecting && isNativeControl(element)) return null;
-    const direction = selecting ? siblingDirection(element) : attr === "data-cuelume-toggle" ? switched(inside ?? element) : undefined;
-    return [element, attr, CLICK_CUES[attr], { input: inputMethod(event), direction }];
+    if (attr === "data-cuelume-select" && isNativeControl(element)) return null;
+    return { element, attr, inside };
+  };
+  const direction = (element: HTMLElement, attr: string, inside: HTMLElement | null, beforeClick: boolean) =>
+attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr === "data-cuelume-toggle" ? switched(inside ?? element, beforeClick) : undefined;
+
+  listen(scope, "click", (event) => {
+    const found = clicked(event);
+    if (!found) return null;
+    const { element, attr, inside } = found;
+    // A label around its control gets two clicks, its own and the one it forwards
+    // to the control. Only the forwarded one plays, and it reads the control's state.
+    if (inside && event.target !== inside) return null;
+    if (pressed === element) {
+      pressed = null;
+      // the press only read which way a select moved; this click makes the pick
+      direction(element, attr, inside, false);
+      return [element, attr, CLICK_CUES[attr], {}, "release"];
+    }
+    return [element, attr, CLICK_CUES[attr], { input: inputMethod(event), direction: direction(element, attr, inside, false) }];
   });
+
+  listen(scope, "pointerdown", (event) => {
+    // a press abandoned without a click or a cancel is over once another pointer goes down
+    pressed = null;
+    // Only a mouse presses here. A finger or a pen may be starting a scroll, and neither's
+    // pointerdown unlocks audio; both play whole on the click.
+    const { pointerType, button } = event as PointerEvent;
+    const found = pointerType === "mouse" && !(button > 0) ? clicked(event) : null;
+    if (found) {
+      const { element, attr, inside } = found;
+      pressed = element;
+      // pointerdown reports detail 0, so inputMethod would call this a keyboard
+      return [element, attr, CLICK_CUES[attr], { input: "mouse", direction: direction(element, attr, inside, true) }, "press"];
+    }
+    const legacy = match(scope, event, "data-cuelume-press", "tap");
+    return legacy && [legacy[0], legacy[1], legacy[2], { input: inputMethod(event) }];
+  });
+
+  (scope as EventTarget).addEventListener("pointercancel", () => (pressed = null), true);
 
   listen(scope, "change", (event) => {
     const found = match(scope, event, "data-cuelume-select", "select");
@@ -213,12 +263,22 @@ export function bind(root?: ParentNode): void {
   });
 
   listen(scope, "keydown", (event) => {
+    // a press abandoned without a click or a cancel is over once a key goes down
+    pressed = null;
     const found = match(scope, event, "data-cuelume-type", "type");
     if (!found || found[0] !== event.target) return null;
     const key = event as KeyboardEvent;
     if (!isTypingKey(key, found[0]) || throttled("type", TYPE_GAP_MS)) return null;
+    typed.add(key.code);
     const [element, attr, fallback] = found;
-    return [element, attr, fallback, { key: keyRole(key.key) }];
+    return [element, attr, fallback, { key: keyRole(key.key) }, "press"];
+  });
+
+  listen(scope, "keyup", (event) => {
+    // the key is done wherever it lifts, even if focus left the field
+    if (!typed.delete((event as KeyboardEvent).code)) return null;
+    const found = match(scope, event, "data-cuelume-type", "type");
+    return found && found[0] === event.target ? [found[0], found[1], found[2], {}, "release"] : null;
   });
 
   listen(scope, "pointerenter", (event) => {
@@ -227,11 +287,6 @@ export function bind(root?: ParentNode): void {
     const relatedTarget = (event as PointerEvent).relatedTarget;
     if (relatedTarget instanceof Node && found[0].contains(relatedTarget)) return null;
     return throttled("hover", HOVER_GAP_MS) ? null : found;
-  });
-
-  listen(scope, "pointerdown", (event) => {
-    const found = match(scope, event, "data-cuelume-press", "tap");
-    return found && [found[0], found[1], found[2], { input: inputMethod(event) }];
   });
 
   listen(scope, "pointerup", (event) => {

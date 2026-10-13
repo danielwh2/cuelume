@@ -1,148 +1,17 @@
 /**
- * The sound palette — layer/recipe types plus the fourteen canonical cues.
+ * The sound palette — the fourteen canonical cues, built from layers.ts.
  * Each cue names an interface job, not a synthesis style, and has its own
  * distinct shape rather than being a volume/EQ tweak on the same click.
  * Retired v0.2 names live on as aliases until 1.0.
  */
 
-type BaseLayer = {
-  /** Seconds after the trigger that this layer starts. */
-  offset?: number;
-  /** Fade-in time, in seconds. */
-  attack: number;
-  /** Fade-out time, in seconds, starting right after the attack. */
-  decay: number;
-  /** Peak volume reached at the end of the attack. */
-  peak: number;
-  /** If set, the layer's pitch (a tone's frequency, a noise layer's filter) glides to this value. */
-  glideTo?: number;
-  /** How long the glide takes, in seconds. Defaults to attack + decay. */
-  glideTime?: number;
-  /**
-   * The lowest emphasis this layer plays at. Unset plays at every level;
-   * "normal" drops out of subtle; "strong" plays only when strong.
-   */
-  from?: "normal" | "strong";
-  /** For `count`: this layer lasts as long as the count, not only starts in step with it. */
-  stretch?: true;
-};
-
-/** A single note — the building block for chimes, arpeggios, and pads. */
-export type ToneLayer = BaseLayer & {
-  kind: "tone";
-  waveform: OscillatorType;
-  frequency: number;
-  /** Detune in cents, for a gentle chorus/beating effect between layers. */
-  detune?: number;
-};
-
-/** Filtered noise — clicks, knocks, and air. */
-export type NoiseLayer = BaseLayer & {
-  kind: "noise";
-  filterType: BiquadFilterType;
-  filterFrequency: number;
-  filterQ?: number;
-};
-
-export type SoundLayer = ToneLayer | NoiseLayer;
-
-/** Per-play randomness, as fractions: each layer's pitch and level move by up to ± these. */
-export type Variation = {
-  pitch: number;
-  level: number;
-};
-
-export type SoundRecipe = {
-  masterGain: number;
-  layers: SoundLayer[];
-  /**
-   * How strongly this cue rings into the shared room, as a multiple of every
-   * cue's faint send. Results that land ring in it more.
-   */
-  room?: number;
-  vary?: Variation;
-};
-
-/**
- * Success and ready ring into the room 6 dB more than the rest, about 16 dB
- * under the sound itself: a result lands in the space without sounding far.
- */
-export const LANDED = 2;
-
-/** How far sharp a knock is struck, and how fast it drops to its pitch. */
-const KNOCK_DROP = 1.6;
-const KNOCK_DROP_TIME = 0.018;
-
-/**
- * A knock's body: a sine struck sharp that drops to `frequency` in 18 ms, the
- * way a small hollow part answers a tap. Heard as a soft "tok", never as a
- * slide. Measured from the keycap sounds in DawoodUI's Artasaka preview.
- */
-export const knock = (frequency: number, decay: number, peak: number, more: Partial<ToneLayer> = {}): ToneLayer => ({
-  kind: "tone", waveform: "sine", frequency: frequency * KNOCK_DROP, glideTo: frequency, glideTime: KNOCK_DROP_TIME,
-  attack: 0.001, decay, peak, ...more,
-});
-
-/**
- * A struck object's modes as [ratio to the fundamental, level] pairs. The
- * ratios are what tells the ear "bar" rather than "synth": real bars are
- * inharmonic.
- */
-type Material = readonly (readonly [ratio: number, level: number])[];
-
-/** A free bar, glass or metal: modes at 1, 2.76 and 5.40 times the fundamental (euphonics.org, free-free bar). */
-export const BAR: Material = [[1, 1], [2.76, 0.3], [5.4, 0.1]];
-/** A marimba bar, undercut so its second mode sits at 3.99x (STK ModalBar's marimba). Rounder than a free bar. */
-export const MALLET: Material = [[1, 1], [3.99, 0.2]];
-
-/** Modes above this are left out: the register ceiling every theme keeps. */
-const MODE_CEILING = 5000;
-/** A struck tone swells in over 3 ms: short enough to strike, long enough not to click. */
-const STRIKE_ATTACK = 0.003;
-/** No mode dies faster than this, or it stops being heard as a pitch. */
-const SHORTEST_MODE = 0.015;
-
-/**
- * A struck note: one sine per mode of `material`. Each mode dies in inverse
- * proportion to its pitch, so the highs go first as on any real bar (decay
- * time falls as 1/f, van den Doel and Pai). Upper modes are ornament that
- * subtle leaves out; `from` moves the whole note to a higher emphasis.
- */
-export function struck(
-  frequency: number,
-  decay: number,
-  peak: number,
-  material: Material,
-  { from }: { from?: "normal" | "strong" } = {},
-): ToneLayer[] {
-  return material
-    .filter(([ratio]) => frequency * ratio <= MODE_CEILING)
-    .map(([ratio, level], mode) => {
-      const layerFrom = mode === 0 ? from : (from ?? "normal");
-      return {
-        kind: "tone", waveform: "sine", frequency: frequency * ratio, attack: STRIKE_ATTACK,
-        decay: Math.max(SHORTEST_MODE, decay / ratio), peak: peak * level, ...(layerFrom ? { from: layerFrom } : {}),
-      };
-    });
-}
-
-/** Lowpass Q in dB that gives a flat, unresonant corner. Web Audio reads a lowpass Q in dB. */
-const FLAT = -3;
-
-/**
- * The mallet meeting the bar: 3 ms of noise, low-passed at the mallet's
- * hardness. A soft felt mallet sits near 1 kHz, a hard one near 3 kHz. It
- * makes a chord a struck object rather than a test tone.
- */
-export const contact = (hardness: number, peak: number, more: Partial<NoiseLayer> = {}): NoiseLayer => ({
-  kind: "noise", filterType: "lowpass", filterFrequency: hardness, filterQ: FLAT, attack: 0.001, decay: 0.003, peak, ...more,
-});
+import { BAR, LANDED, MALLET, contact, knock, struck, type SoundRecipe } from "./layers.js";
 
 // Each cue is arranged for three emphases: layers marked from "normal" are
 // ornament that subtle leaves out, and each cue has one layer of its own that
 // only strong plays.
 //
-// Every cue is one sound: all its layers strike together.
+// A cue's press strikes at once, and so does its release: no layer starts late.
 //
 // Premium, not playful: clicks and knocks are filtered noise, tones are
 // struck objects (`struck`): a marimba bar for mallets, a free bar for glass,

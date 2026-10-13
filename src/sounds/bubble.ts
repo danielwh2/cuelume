@@ -8,14 +8,15 @@
  * on. The only theme whose tones slide. Nothing
  * is centred above 5 kHz, outcomes say what they mean in one glide (success rises,
  * error sinks, warning stays level, attention bends up), and levels match the
- * default palette on the loudest 30 ms.
+ * default palette on perceived loudness (K-weighted, the loudest 100 ms).
  *
  * Arranged for emphasis like the other themes: layers marked from "normal"
  * are ornament that subtle leaves out, and each cue has a layer only strong
  * plays.
  */
 
-import { knock, LANDED, type NoiseLayer, type SoundName, type SoundRecipe, type ToneLayer } from "./recipes.js";
+import { knock, LANDED, type NoiseLayer, type SoundRecipe, type ToneLayer } from "./layers.js";
+import type { SoundName } from "./recipes.js";
 
 /** A sine that slides from `from` to `to` Hz in `time` seconds. */
 const slide = (from: number, to: number, time: number, decay: number, peak: number, more: Partial<ToneLayer> = {}): ToneLayer => ({
@@ -47,7 +48,7 @@ const STEADY = { pitch: 0, level: 0.08 };
 export const BUBBLE = {
   /** A keycap landing on water: a soft knock that blooms into a small bubble. A little different every time. */
   tap: {
-    masterGain: 0.349,
+    masterGain: 0.411,
     layers: [
       knock(300, 0.02, 0.06),
       bloop(600, 0.035, 0.014, { attack: 0.012 }),
@@ -58,7 +59,7 @@ export const BUBBLE = {
   },
   /** A keycap popping up: a higher, shorter knock, pitched differently every stroke. */
   type: {
-    masterGain: 0.281,
+    masterGain: 0.383,
     layers: [
       knock(415, 0.014, 0.06),
       pop(2500, 0.03, { from: "normal" }),
@@ -68,7 +69,7 @@ export const BUBBLE = {
   },
   /** A drip: the only quick flick upward. A later option drips higher, an earlier one lower. */
   select: {
-    masterGain: 0.278,
+    masterGain: 0.214,
     layers: [
       drip(700, 0.025, 0.05),
       pop(3000, 0.075, { from: "normal" }),
@@ -78,7 +79,7 @@ export const BUBBLE = {
   },
   /** A cork: a soft thup as the air rushes up an octave. Switching off sinks it. */
   toggle: {
-    masterGain: 0.153,
+    masterGain: 0.175,
     layers: [
       { kind: "noise", filterType: "lowpass", filterFrequency: 900, filterQ: 0.9, attack: 0.001, decay: 0.008, peak: 0.12 },
       slide(330, 660, 0.06, 0.07, 0.045, { attack: 0.003 }),
@@ -89,7 +90,7 @@ export const BUBBLE = {
   },
   /** A balloon filling: one slow swell that rises a ninth. */
   open: {
-    masterGain: 0.211,
+    masterGain: 0.221,
     layers: [
       slide(220, 520, 0.14, 0.06, 0.04, { attack: 0.1 }),
       slide(330, 780, 0.14, 0.06, 0.012, { from: "normal", attack: 0.1 }),
@@ -99,7 +100,7 @@ export const BUBBLE = {
   },
   /** A gulp: one fast fall. */
   close: {
-    masterGain: 0.28,
+    masterGain: 0.357,
     layers: [
       slide(700, 220, 0.07, 0.08, 0.045, { attack: 0.004 }),
       pop(1200, 0.06, { from: "normal" }),
@@ -109,7 +110,7 @@ export const BUBBLE = {
   },
   /** One bubble rising a fifth, C to G, in a small room. */
   success: {
-    masterGain: 0.48,
+    masterGain: 0.52,
     layers: [
       slide(523.25, 783.99, 0.08, 0.28, 0.04, { attack: 0.003 }),
       slide(1046.5, 1567.98, 0.08, 0.08, 0.01, { from: "normal", attack: 0.003 }),
@@ -120,7 +121,7 @@ export const BUBBLE = {
   },
   /** One bubble sinking a fourth, F to C: a soft "uh-oh". */
   error: {
-    masterGain: 0.42,
+    masterGain: 0.387,
     layers: [
       slide(349.23, 261.63, 0.14, 0.2, 0.045, { attack: 0.004 }),
       pop(900, 0.12, { from: "normal" }),
@@ -130,7 +131,7 @@ export const BUBBLE = {
   },
   /** A zip: one bubble shooting up through fizz. Going back, it dives. */
   navigate: {
-    masterGain: 0.406,
+    masterGain: 0.554,
     layers: [
       slide(300, 1500, 0.09, 0.08, 0.035, { attack: 0.01 }),
       { from: "normal", kind: "noise", filterType: "bandpass", filterFrequency: 1500, glideTo: 3000, glideTime: 0.09, filterQ: 1, attack: 0.02, decay: 0.07, peak: 0.05 },
@@ -140,7 +141,7 @@ export const BUBBLE = {
   },
   /** One round note with a small wobble, settling where it started: level. */
   warning: {
-    masterGain: 0.468,
+    masterGain: 0.436,
     layers: [
       slide(500, 440, 0.05, 0.16, 0.045),
       pop(1800, 0.09, { from: "normal" }),
@@ -150,7 +151,7 @@ export const BUBBLE = {
   },
   /** A simmer: one slow bubble rising through soft fizz, gone within about a second. Nothing lands. */
   loading: {
-    masterGain: 0.191,
+    masterGain: 0.194,
     layers: [
       { kind: "noise", filterType: "lowpass", filterFrequency: 900, filterQ: 0.7, attack: 0.35, decay: 0.6, peak: 0.03 },
       slide(400, 600, 0.35, 0.7, 0.016, { attack: 0.35 }),
@@ -161,7 +162,7 @@ export const BUBBLE = {
   },
   /** A drop into water: the plip and the round bubble it leaves, one sound, in a small room. */
   ready: {
-    masterGain: 0.477,
+    masterGain: 0.532,
     layers: [
       slide(1400, 700, 0.012, 0.02, 0.03, { attack: 0.001 }),
       slide(392, 587.33, 0.06, 0.25, 0.04, { attack: 0.012 }),
@@ -173,7 +174,7 @@ export const BUBBLE = {
   },
   /** "Hm?": one note that bends up a fourth like a question. */
   attention: {
-    masterGain: 0.561,
+    masterGain: 0.666,
     layers: [
       slide(659.25, 880, 0.14, 0.25, 0.035, { attack: 0.003 }),
       pop(2200, 0.12, { from: "normal" }),
@@ -183,7 +184,7 @@ export const BUBBLE = {
   },
   /** A number rolling: fizz and one bubble rising together for as long as the roll (sinking counting down). */
   count: {
-    masterGain: 0.238,
+    masterGain: 0.267,
     layers: [
       { stretch: true, kind: "noise", filterType: "lowpass", filterFrequency: 900, glideTo: 1800, glideTime: 0.6, filterQ: 0.7, attack: 0.15, decay: 0.55, peak: 0.04 },
       { ...slide(587.33, 880, 0.6, 0.55, 0.02, { attack: 0.15 }), stretch: true },

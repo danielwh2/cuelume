@@ -6,7 +6,8 @@
 import { BUBBLE } from "./bubble.js";
 import { MECH } from "./mech.js";
 import { PRESS } from "./press.js";
-import { RECIPES, type SoundName, type SoundRecipe } from "./recipes.js";
+import type { SoundRecipe } from "./layers.js";
+import { RECIPES, type SoundName } from "./recipes.js";
 
 export const THEMES = {
   default: RECIPES,
