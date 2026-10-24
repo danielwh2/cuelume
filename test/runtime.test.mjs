@@ -493,6 +493,73 @@ test("a cue plays one voice at a time: a new play releases the last, other cues 
   assert.equal(other.gain.ramps.length, 0);
 });
 
+// A context that is still waking: resume() settles only when the test wakes it, as a slow output
+// device, a backgrounded iOS page or an interrupted session does.
+function wakingContext() {
+  const { Context, log } = recordingContext();
+  const contexts = [];
+  const wakes = [];
+  class Waking extends Context {
+    state = "suspended";
+    constructor() {
+      super();
+      contexts.push(this);
+    }
+    resume() {
+      return new Promise((resolve) =>
+        wakes.push(() => {
+          this.state = "running";
+          resolve();
+        }),
+      );
+    }
+  }
+  return {
+    Waking,
+    log,
+    sleep() {
+      for (const asleep of contexts) asleep.state = "suspended";
+    },
+    async wake() {
+      for (const settle of wakes.splice(0)) settle();
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  };
+}
+
+test("plays asked for while the context wakes sound once, not on top of each other", async (context) => {
+  context.after(restoreGlobals);
+  const audio = wakingContext();
+  setGlobal("setTimeout", () => 0);
+  setGlobal("window", { AudioContext: audio.Waking });
+  const { play } = await import(`../dist/audio/engine.js?waking=${Date.now()}`);
+
+  play("tap");
+  await audio.wake();
+  const one = audio.log.sources.length;
+  assert.ok(one > 0, "a tap that woke the context plays");
+
+  // four taps while it sleeps again: each one asks to resume, only the last one sounds
+  audio.sleep();
+  for (let tap = 0; tap < 4; tap++) play("tap");
+  await audio.wake();
+  assert.equal(audio.log.sources.length - one, one, "they would otherwise all start at once and add up");
+});
+
+test("a play waiting on the context is dropped when sound is switched off, not played later", async (context) => {
+  context.after(restoreGlobals);
+  const audio = wakingContext();
+  setGlobal("setTimeout", () => 0);
+  setGlobal("window", { AudioContext: audio.Waking });
+  const { play, setEnabled } = await import(`../dist/audio/engine.js?waking-off=${Date.now()}`);
+
+  play("tap");
+  setEnabled(false);
+  setEnabled(true);
+  await audio.wake();
+  assert.equal(audio.log.sources.length, 0);
+});
+
 test("a press lets go: play() releases 90 ms later, a binding splits the two, and quick repeats walk", async (context) => {
   context.after(restoreGlobals);
   context.mock.method(Math, "random", () => 0.5); // no per-play variation, so pitches compare exactly

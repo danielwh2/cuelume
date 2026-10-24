@@ -32,6 +32,14 @@ aims to follow [Semantic Versioning](https://semver.org/).
   rang up to three times longer than a loud one with the same number. Every
   recipe was converted to ring as it did; no cue moves by more than 0.3 dB.
 
+### Fixed
+
+- Cues asked for while the audio context is still starting (a slow output
+  device, or iOS after backgrounding or an interruption) no longer all
+  start at the same instant when it wakes and play as one much louder cue.
+  Each play still asks the context to resume from its own gesture; only the
+  latest one sounds. `setEnabled(false)` also drops a cue that is waiting.
+
 ## [0.2.5] - 2026-10-13
 
 ### Added
