@@ -29,7 +29,7 @@ let sharedContext: AudioContext | null = null;
 let sharedBus: OutputBus | null = null;
 const voices: Voices = new Map();
 /** The latest play waiting for the context to start; earlier ones would all start at once and add up. */
-let waiting: (() => void) | null = null;
+let waiting: { played: Played; part: Part; render: (part: Part) => void } | null = null;
 let enabled = true;
 let globalVolume = 1;
 let activeTheme: ThemeName = "default";
@@ -219,13 +219,16 @@ export function playInContext(sound: unknown, options: PlayOptions | undefined, 
   } else {
     // Every play still asks to resume (inside its own gesture), but only the latest one sounds when
     // the context starts: each waiting play would otherwise start at the same instant and add up.
-    waiting = () => renderRecipe(context, getBus, voices, name, played, part);
+    // A release joins its own waiting press into the whole cue; it never replaces another cue.
+    if (part !== "release" || !waiting)
+      waiting = { played, part, render: (as) => renderRecipe(context, getBus, voices, name, played, as) };
+    else if (waiting.played === played && waiting.part === "press") waiting.part = "both";
     try {
       void context.resume().then(
         () => {
-          const render = waiting;
+          const next = waiting;
           waiting = null;
-          if (render && enabled && context.state === "running") render();
+          if (next && enabled && context.state === "running") next.render(next.part);
         },
         () => {},
       );

@@ -38,7 +38,8 @@ aims to follow [Semantic Versioning](https://semver.org/).
   device, or iOS after backgrounding or an interruption) no longer all
   start at the same instant when it wakes and play as one much louder cue.
   Each play still asks the context to resume from its own gesture; only the
-  latest one sounds. `setEnabled(false)` also drops a cue that is waiting.
+  latest one sounds, and a press and its release made while it wakes play
+  as the whole cue. `setEnabled(false)` also drops a cue that is waiting.
 
 ## [0.2.5] - 2026-10-13
 

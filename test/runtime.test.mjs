@@ -546,6 +546,43 @@ test("plays asked for while the context wakes sound once, not on top of each oth
   assert.equal(audio.log.sources.length - one, one, "they would otherwise all start at once and add up");
 });
 
+test("a press and its release made while the context wakes sound as the whole cue", async (context) => {
+  context.after(restoreGlobals);
+  const audio = wakingContext();
+  setGlobal("setTimeout", () => 0);
+  setGlobal("window", { AudioContext: audio.Waking });
+  const { play, press, release } = await import(`../dist/audio/engine.js?waking-press=${Date.now()}`);
+  play("tap");
+  await audio.wake();
+
+  for (const theme of ["default", "press"]) {
+    await audio.wake();
+    const before = audio.log.sources.length;
+    play("tap", { theme });
+    const whole = audio.log.sources.length - before;
+    assert.ok(whole > 0);
+
+    // a click while it sleeps: the release must not replace its press (silent, or only half)
+    audio.sleep();
+    press("tap", { theme });
+    release("tap");
+    await audio.wake();
+    assert.equal(audio.log.sources.length - before - whole, whole, theme);
+  }
+
+  // a release never displaces a later cue: the toggle replaced the press and still sounds whole
+  await audio.wake();
+  const before = audio.log.sources.length;
+  play("toggle");
+  const toggle = audio.log.sources.length - before;
+  audio.sleep();
+  press("tap");
+  play("toggle");
+  release("tap");
+  await audio.wake();
+  assert.equal(audio.log.sources.length - before - toggle, toggle);
+});
+
 test("a play waiting on the context is dropped when sound is switched off, not played later", async (context) => {
   context.after(restoreGlobals);
   const audio = wakingContext();
