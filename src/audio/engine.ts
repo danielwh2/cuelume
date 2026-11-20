@@ -54,6 +54,8 @@ export function setEnabled(value: boolean): void {
   voices.clear();
   waiting = null;
   if (sharedContext && sharedBus) silence(sharedContext, sharedBus);
+  // nothing left to ring out, so let go of the audio device now; otherwise the last play's end does
+  if (sharedContext && sounding === 0) suspend(sharedContext);
 }
 
 /**
@@ -109,7 +111,7 @@ function onGesture(): void {
   if (!enabled || isBlocked()) return;
   const context = getAudioContext();
   if (!context) disarm();
-  else if (context.state === "running") {
+  else if (ready(context)) {
     disarm();
     flush(context);
   } else void wake(context);
@@ -122,6 +124,52 @@ function flush(context: AudioContext): void {
   if (next && enabled && context.state === "running" && now() - next.askedAt <= STALE_CUE_MS) next.render(next.part);
 }
 
+/**
+ * How long the context sits idle, after the last play has been let go, before it is suspended. A
+ * running context keeps the audio device open at its smallest buffer for as long as the page lives
+ * (in Safari and WebKit views that makes other apps' audio crackle). Long enough for the room to
+ * ring out and to ride through a burst of clicks; the next play resumes it.
+ */
+const IDLE_SUSPEND_MS = 1000;
+/** Plays not yet let go. */
+let sounding = 0;
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
+/** A suspend in flight: the context still reads "running" but is about to stop. */
+let suspending = false;
+
+function idleSoon(context: AudioContext): void {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => suspend(context), IDLE_SUSPEND_MS);
+}
+
+/** Suspends a running, idle context; a missing, throwing or refused suspend() is ignored. */
+function suspend(context: AudioContext): void {
+  clearTimeout(idleTimer);
+  if (suspending || sounding > 0 || context.state !== "running" || typeof context.suspend !== "function") return;
+  suspending = true;
+  const settled = () => {
+    suspending = false;
+  };
+  try {
+    context.suspend().then(settled, settled);
+  } catch {
+    settled();
+  }
+}
+
+/** Renders a play and keeps the context running until it has been let go. */
+function render(context: AudioContext, getBus: () => OutputBus, name: SoundName, played: Played, part: Part): void {
+  const ended = () => {
+    if (--sounding === 0) idleSoon(context);
+  };
+  if (!renderRecipe(context, getBus, voices, name, played, part, ended)) return;
+  clearTimeout(idleTimer);
+  sounding++;
+}
+
+/** Whether `context` can take a play now: running, and not about to suspend. */
+const ready = (context: AudioContext) => context.state === "running" && !suspending;
+
 /** Resumes `context` without surfacing a refusal; resolves whether it runs. */
 function wake(context: AudioContext): Promise<boolean> {
   try {
@@ -130,6 +178,8 @@ function wake(context: AudioContext): Promise<boolean> {
         if (context.state !== "running") return false;
         disarm();
         flush(context);
+        // woken for nothing, such as a stale cue or unlock(): don't hold the device open
+        if (sounding === 0) idleSoon(context);
         return true;
       },
       () => false,
@@ -160,7 +210,10 @@ export function unlock(): Promise<boolean> {
   } catch {
     // A cue builds them itself if this fails.
   }
-  if (context.state === "running") return Promise.resolve(true);
+  if (ready(context)) {
+    if (sounding === 0) idleSoon(context);
+    return Promise.resolve(true);
+  }
   return wake(context).then((running) => {
     if (!running) arm();
     return running;
@@ -215,9 +268,9 @@ function sinceLastPlay(sound: SoundName): number {
 
 /**
  * Plays a sound immediately. Safe to call from anywhere — lazily creates
- * the shared `AudioContext` on first use, resumes it if the browser
- * started it suspended (e.g. before any user gesture), and is a no-op
- * when Web Audio is unavailable (SSR, old browsers).
+ * the shared `AudioContext` on first use, resumes it if it is suspended
+ * (by the browser before any user gesture, or by cuelume once idle), and is
+ * a no-op when Web Audio is unavailable (SSR, old browsers).
  */
 export function play(sound?: SoundName, options?: PlayOptions): void;
 /** @deprecated Renamed in v0.3 and removed in 1.0. See the migration table in the README. */
@@ -290,14 +343,15 @@ export function playInContext(sound: unknown, options: PlayOptions | undefined, 
   // ponytail: bus built lazily inside render, only once a layer will actually sound
   const getBus = () => (sharedBus ??= createOutput(context));
 
-  if (context.state === "running") {
-    renderRecipe(context, getBus, voices, name, played, part);
+  // a context about to suspend is resumed first, not rendered into
+  if (ready(context)) {
+    render(context, getBus, name, played, part);
   } else {
     // Every play still asks to resume (inside its own gesture), but only the latest one sounds when
     // the context starts: each waiting play would otherwise start at the same instant and add up.
     // A release joins its own waiting press into the whole cue; it never replaces another cue.
     if (part !== "release" || !waiting)
-      waiting = { played, part, askedAt: now(), render: (as) => renderRecipe(context, getBus, voices, name, played, as) };
+      waiting = { played, part, askedAt: now(), render: (as) => render(context, getBus, name, played, as) };
     else if (waiting.played === played && waiting.part === "press") waiting.part = "both";
     void wake(context);
     // off a gesture's call stack resume() can stay pending: the next gesture that counts starts it

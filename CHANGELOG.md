@@ -51,6 +51,11 @@ aims to follow [Semantic Versioning](https://semver.org/).
   the browser blocks is dropped, and audio starts on the next tap, click or
   key press, even one on a control with no cue. A cue left waiting on the
   context plays then only if it was asked for within the last second.
+- The shared audio context no longer runs for as long as the page lives. It
+  is suspended a second after the last cue has rung out, and at once when
+  `setEnabled(false)` finds nothing sounding; the next cue resumes it. A
+  running context kept the audio device open at its smallest buffer, which
+  made other apps' audio crackle in Safari and WebKit views.
 
 ## [0.2.5] - 2026-10-13
 

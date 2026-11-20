@@ -182,10 +182,19 @@ export function layersFor({ recipe, emphasis, shape, step }: Pick<Played, "recip
   );
 }
 
-export function renderRecipe(context: AudioContext, getBus: () => OutputBus, voices: Voices, sound: SoundName, played: Played, part: Part): void {
+/** Renders `part` of a play; returns whether anything sounds. `ended` runs once, when it has been let go. */
+export function renderRecipe(
+  context: AudioContext,
+  getBus: () => OutputBus,
+  voices: Voices,
+  sound: SoundName,
+  played: Played,
+  part: Part,
+  ended?: () => void,
+): boolean {
   const { recipe, volume } = played;
   const layers = layersFor(played, part);
-  if (layers.length === 0) return;
+  if (layers.length === 0) return false;
 
   const now = context.currentTime;
   const bus = getBus();
@@ -226,6 +235,7 @@ export function renderRecipe(context: AudioContext, getBus: () => OutputBus, voi
     bus.live.delete(master);
     master.disconnect();
     send.disconnect();
+    ended?.();
   };
   let playing = sources.length;
   for (const source of sources) {
@@ -234,4 +244,5 @@ export function renderRecipe(context: AudioContext, getBus: () => OutputBus, voi
     };
   }
   setTimeout(cleanup, (PLAYBACK_LEAD + sourceEnd(layers) + CLEANUP_FALLBACK) * 1000);
+  return true;
 }
