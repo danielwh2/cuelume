@@ -2021,3 +2021,178 @@ test("unlock builds the output, room and noise up front, and arms the next gestu
   assert.equal(await blocked.unlock(), false);
   assert.equal(win.listeners.size, 4);
 });
+
+// A context that suspends and resumes on request, with timers and source ends the test runs by hand.
+function idlingContext() {
+  const { Context, log } = recordingContext();
+  const calls = [];
+  let settleSuspend = null;
+  class Idling extends Context {
+    suspending = Promise.resolve();
+    suspend() {
+      calls.push("suspend");
+      this.suspending = new Promise((resolve) => {
+        settleSuspend = () => {
+          this.state = "suspended";
+          resolve();
+        };
+      });
+      return this.suspending;
+    }
+    // as in a browser, a resume asked for during a suspend settles after it
+    resume() {
+      calls.push("resume");
+      return this.suspending.then(() => {
+        this.state = "running";
+      });
+    }
+  }
+  const timers = [];
+  setGlobal("setTimeout", (callback, ms) => timers.push({ callback, ms, live: true }));
+  setGlobal("clearTimeout", (id) => {
+    if (timers[id - 1]) timers[id - 1].live = false;
+  });
+  return {
+    Idling,
+    log,
+    calls,
+    /** Ends every source started so far, as a running context does. */
+    endAll() {
+      for (const source of log.sources.splice(0)) source.onended?.();
+    },
+    /** Runs the idle timers still pending. */
+    idle() {
+      for (const timer of timers) {
+        if (timer.live && timer.ms === 1000) {
+          timer.live = false;
+          timer.callback();
+        }
+      }
+    },
+    settle() {
+      settleSuspend?.();
+      settleSuspend = null;
+      return new Promise((resolve) => setImmediate(resolve));
+    },
+  };
+}
+
+test("the context is suspended once the last play has rung out and a second has passed, not before", async (context) => {
+  context.after(restoreGlobals);
+  const audio = idlingContext();
+  setGlobal("window", { AudioContext: audio.Idling });
+  const { play } = await import(`../dist/audio/engine.js?idle=${Date.now()}`);
+
+  play("success");
+  const first = [...audio.log.sources];
+  audio.log.sources.length = 0;
+  play("tap");
+  // the tap ends first, but the success still sounds: nothing suspends yet
+  for (const source of audio.log.sources.splice(0)) source.onended();
+  audio.idle();
+  assert.deepEqual(audio.calls, []);
+
+  // the last one lets go, then a second passes
+  for (const source of first) source.onended();
+  assert.deepEqual(audio.calls, [], "the room still rings out");
+  audio.idle();
+  assert.deepEqual(audio.calls, ["suspend"]);
+  await audio.settle();
+
+  // the next play resumes the same context and sounds
+  play("tap");
+  await audio.settle();
+  assert.deepEqual(audio.calls, ["suspend", "resume"]);
+  assert.ok(audio.log.sources.length > 0);
+});
+
+test("a play inside the idle second keeps the context running", async (context) => {
+  context.after(restoreGlobals);
+  const audio = idlingContext();
+  setGlobal("window", { AudioContext: audio.Idling });
+  const { play } = await import(`../dist/audio/engine.js?idle-burst=${Date.now()}`);
+
+  play("tap");
+  audio.endAll();
+  play("tap"); // half a second later, say
+  audio.idle();
+  assert.deepEqual(audio.calls, [], "the second tap cancelled the pending suspend");
+  audio.endAll();
+  audio.idle();
+  assert.deepEqual(audio.calls, ["suspend"]);
+});
+
+test("a play while the context is suspending resumes it first, and sounds once", async (context) => {
+  context.after(restoreGlobals);
+  const audio = idlingContext();
+  setGlobal("window", { AudioContext: audio.Idling });
+  const { play } = await import(`../dist/audio/engine.js?idle-race=${Date.now()}`);
+
+  play("tap");
+  const one = audio.log.sources.length;
+  audio.endAll();
+  audio.idle();
+  // suspend() is in flight: the context still reads "running" but is about to stop
+  play("tap");
+  assert.equal(audio.log.sources.length, 0, "not rendered into a context about to stop");
+  await audio.settle();
+  assert.deepEqual(audio.calls, ["suspend", "resume"]);
+  assert.equal(audio.log.sources.length, one);
+});
+
+test("switching sound off lets go of the audio device", async (context) => {
+  context.after(restoreGlobals);
+  const audio = idlingContext();
+  setGlobal("window", { AudioContext: audio.Idling });
+  const { play, setEnabled } = await import(`../dist/audio/engine.js?idle-off=${Date.now()}`);
+
+  // nothing sounding: at once
+  play("tap");
+  audio.endAll();
+  setEnabled(false);
+  assert.deepEqual(audio.calls, ["suspend"]);
+  await audio.settle();
+  setEnabled(true);
+
+  // a cue still fading: once it has been let go
+  play("tap");
+  await audio.settle();
+  setEnabled(false);
+  assert.deepEqual(audio.calls, ["suspend", "resume"]);
+  audio.endAll();
+  audio.idle();
+  assert.deepEqual(audio.calls, ["suspend", "resume", "suspend"]);
+});
+
+test("a context woken for nothing still suspends, and a refused or missing suspend is ignored", async (context) => {
+  context.after(restoreGlobals);
+  const audio = idlingContext();
+  class Refusing extends audio.Idling {
+    suspend() {
+      audio.calls.push("suspend");
+      return Promise.reject(new Error("refused"));
+    }
+  }
+  setGlobal("window", { AudioContext: Refusing });
+  const { unlock, play } = await import(`../dist/audio/engine.js?idle-unlock=${Date.now()}`);
+  assert.equal(await unlock(), true);
+  audio.idle();
+  assert.deepEqual(audio.calls, ["suspend"]);
+  await audio.settle();
+  // refused: it stays running, and plays render directly
+  play("tap");
+  assert.ok(audio.log.sources.length > 0);
+
+  for (const suspend of [undefined, () => { throw new Error("no"); }]) {
+    const quiet = idlingContext();
+    class Odd extends quiet.Idling {}
+    Odd.prototype.suspend = suspend;
+    setGlobal("window", { AudioContext: Odd });
+    const engine = await import(`../dist/audio/engine.js?idle-odd=${Math.random()}`);
+    engine.play("tap");
+    quiet.endAll();
+    assert.doesNotThrow(() => quiet.idle());
+    engine.play("tap");
+    assert.ok(quiet.log.sources.length > 0);
+  }
+});
