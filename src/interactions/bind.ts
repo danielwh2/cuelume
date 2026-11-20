@@ -18,7 +18,8 @@
  *
  * Deprecated, kept for the v0.3 migration window and removed in 1.0:
  *
- *   data-cuelume-hover     → pointerenter (fine mouse, throttled), plays `select`
+ *   data-cuelume-hover     → pointerenter (fine mouse that has moved since the last press,
+ *                            Enter, Space or scroll; throttled), plays `select`
  *   data-cuelume-press     → pointerdown, plays `tap`
  *   data-cuelume-release   → pointerup, plays `tap` unless the element also has press
  *
@@ -40,6 +41,10 @@ import { resolveSound, type SoundName } from "../sounds/recipes.js";
 import type { ThemeName } from "../sounds/themes.js";
 
 const HOVER_GAP_MS = 150;
+/** Hand jitter during a click moves less than this. */
+const HOVER_REARM_PX = 4;
+/** The keys that activate a link or button; keys that scroll disarm hover through the scroll. */
+const ACTIVATING_KEYS: ReadonlySet<string> = new Set(["Enter", " "]);
 const TYPE_GAP_MS = 40;
 /** Chrome reports keydowns that belong to an IME composition with this code. */
 const IME_KEY_CODE = 229;
@@ -64,6 +69,27 @@ const lastSelected = new WeakMap<Element, number>();
 let pressed: Element | null = null;
 /** Keys whose keydown played `type`, waiting for their keyup. By code: lifting Shift first renames a key, "A" to "a". */
 const typed = new Set<string>();
+
+// Browsers re-dispatch pointerenter when the DOM changes under a still cursor: an SPA navigation
+// after a click or Enter, or a scroll. They never synthesize pointermove, so a real hover comes
+// with movement. Hover stays disarmed after those until the mouse has travelled HOVER_REARM_PX.
+let hoverArmed = true;
+let armPoint: [number, number] | null = null;
+let lastPointer: [number, number] | null = null;
+
+function disarmHover(): void {
+  hoverArmed = false;
+  armPoint = lastPointer;
+}
+
+function rearmHover(event: PointerEvent): void {
+  if (event.pointerType !== "mouse") return;
+  lastPointer = [event.clientX, event.clientY];
+  if (hoverArmed) return;
+  // disarmed before the mouse had been seen: this move only says where it is
+  armPoint ??= lastPointer;
+  if (Math.hypot(lastPointer[0] - armPoint[0], lastPointer[1] - armPoint[1]) > HOVER_REARM_PX) hoverArmed = true;
+}
 
 type Match = [element: HTMLElement, attr: string, fallback: SoundName, context?: Context, part?: Part] | null;
 
@@ -253,9 +279,13 @@ attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr 
   listen(scope, signal, "pointerdown", (event) => {
     // a press abandoned without a click or a cancel is over once another pointer goes down
     pressed = null;
+    const { pointerType, button, clientX, clientY } = event as PointerEvent;
+    if (pointerType === "mouse") {
+      lastPointer = [clientX, clientY];
+      disarmHover();
+    }
     // Only a mouse presses here. A finger or a pen may be starting a scroll, and neither's
     // pointerdown unlocks audio; both play whole on the click.
-    const { pointerType, button } = event as PointerEvent;
     const found = pointerType === "mouse" && !(button > 0) ? clicked(event) : null;
     if (found) {
       const { element, attr, inside } = found;
@@ -279,6 +309,7 @@ attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr 
   listen(scope, signal, "keydown", (event) => {
     // a press abandoned without a click or a cancel is over once a key goes down
     pressed = null;
+    if (ACTIVATING_KEYS.has((event as KeyboardEvent).key)) disarmHover();
     const found = match(scope, event, "data-cuelume-type", "type");
     if (!found || found[0] !== event.target) return null;
     const key = event as KeyboardEvent;
@@ -297,7 +328,7 @@ attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr 
 
   listen(scope, signal, "pointerenter", (event) => {
     const found = match(scope, event, "data-cuelume-hover", "select");
-    if (!found || !isMouse(event as PointerEvent)) return null;
+    if (!found || !isMouse(event as PointerEvent) || !hoverArmed) return null;
     const relatedTarget = (event as PointerEvent).relatedTarget;
     if (relatedTarget instanceof Node && found[0].contains(relatedTarget)) return null;
     return throttled("hover", HOVER_GAP_MS) ? null : found;
@@ -307,6 +338,10 @@ attr === "data-cuelume-select" ? siblingDirection(element, !beforeClick) : attr 
     const found = match(scope, event, "data-cuelume-release", "tap");
     return found && !found[0].hasAttribute("data-cuelume-press") ? found : null;
   });
+
+  const passive = { capture: true, passive: true, signal };
+  (scope as EventTarget).addEventListener("pointermove", (event) => rearmHover(event as PointerEvent), passive);
+  (scope as EventTarget).addEventListener("scroll", disarmHover, passive);
 
   return unbind;
 }

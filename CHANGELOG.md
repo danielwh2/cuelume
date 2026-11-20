@@ -60,6 +60,10 @@ aims to follow [Semantic Versioning](https://semver.org/).
   A context the browser has closed is replaced by a fresh one on the next
   cue, and so is one that reads `running` while its clock has stopped,
   which each play now checks for three quarters of a second later.
+- The deprecated `data-cuelume-hover` no longer plays right after a click in
+  a single-page app. Browsers re-send `pointerenter` when a route swaps the
+  page under a still cursor; hover now waits after a mouse press, Enter,
+  Space or scroll until the mouse has moved more than 4 px.
 
 ## [0.2.5] - 2026-10-13
 
