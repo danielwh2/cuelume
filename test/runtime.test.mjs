@@ -1015,6 +1015,7 @@ test("every cue renders, deprecated names play, and every keystroke varies withi
   }
 
   setGlobal("setTimeout", (callback, delay) => {
+    if (delay === 750) return 0; // the clock probe, not a play's cleanup
     renders++;
     delays.push(delay);
     return 0;
@@ -1260,6 +1261,7 @@ test("binding is delegated, dynamic, idempotent, and plays one cue per action", 
   setGlobal("document", {});
   setGlobal("performance", { now: () => now });
   setGlobal("setTimeout", (callback, delay) => {
+    if (delay === 750) return 0; // the clock probe, not a play's cleanup
     renders++;
     delays.push(delay);
     return 0;
@@ -1823,6 +1825,9 @@ test("every play rings into one shared room, and a finished play lets go of it",
 
   // one cleanup, once every source has ended, with a fallback timer for a context that never ends them;
   // the room itself stays up for the next play
+  const probes = timers.filter((timer) => timer.delay === 750);
+  assert.equal(probes.length, 1, "a check that the context's clock moves");
+  timers.splice(timers.indexOf(probes[0]), 1);
   assert.equal(timers.length, 1);
   const longest = Math.max(...RECIPES.success.layers.filter((l) => l.from !== "strong").map((l) => l.attack + l.decay));
   assert.equal(Math.round(timers[0].delay), Math.round((LEAD + longest + 0.05 + 1) * 1000));
@@ -2195,4 +2200,82 @@ test("a context woken for nothing still suspends, and a refused or missing suspe
     engine.play("tap");
     assert.ok(quiet.log.sources.length > 0);
   }
+});
+
+test("a context the browser has closed, as Safari can after a screen lock, is replaced by a fresh one", async (context) => {
+  context.after(restoreGlobals);
+  const audio = idlingContext();
+  const made = [];
+  class Counted extends audio.Idling {
+    constructor() {
+      super();
+      made.push(this);
+    }
+  }
+  setGlobal("window", { AudioContext: Counted });
+  const { play } = await import(`../dist/audio/engine.js?closed=${Date.now()}`);
+
+  play("success");
+  const old = [...audio.log.sources];
+  audio.log.sources.length = 0;
+  made[0].state = "closed";
+  play("tap");
+  assert.equal(made.length, 2, "a fresh context");
+  assert.ok(audio.log.sources.length > 0, "the cue sounds on it");
+  audio.log.sources.length = 0;
+
+  // the old context's plays ending don't let the fresh one suspend under a cue still sounding
+  play("success");
+  for (const source of old) source.onended();
+  audio.idle();
+  assert.deepEqual(audio.calls, []);
+});
+
+test("a context reading running with its clock stopped is closed and replaced on the next play", async (context) => {
+  context.after(restoreGlobals);
+  const audio = idlingContext();
+  const timers = [];
+  setGlobal("setTimeout", (callback, ms) => timers.push({ callback, ms }));
+  const probe = () => {
+    const index = timers.findIndex(({ ms }) => ms === 750);
+    if (index >= 0) timers.splice(index, 1)[0].callback();
+    return index >= 0;
+  };
+  const made = [];
+  class Counted extends audio.Idling {
+    constructor() {
+      super();
+      made.push(this);
+    }
+    close() {
+      this.closed = true;
+      return Promise.resolve();
+    }
+  }
+  setGlobal("window", { AudioContext: Counted });
+  const { play } = await import(`../dist/audio/engine.js?stuck=${Date.now()}`);
+
+  // a clock that moves: kept, and one probe at a time
+  play("tap");
+  play("tap");
+  assert.equal(timers.filter(({ ms }) => ms === 750).length, 1);
+  made[0].currentTime = 0.75;
+  assert.ok(probe());
+  play("tap");
+  assert.equal(made.length, 1);
+
+  // an idle suspend in between: a stopped clock proves nothing
+  audio.endAll();
+  timers.splice(timers.findIndex(({ ms }) => ms === 1000), 1)[0].callback();
+  await audio.settle();
+  made[0].state = "running";
+  assert.ok(probe());
+  assert.ok(!made[0].closed);
+
+  // running throughout with the clock stopped: let go, and the next play starts over
+  play("tap");
+  assert.ok(probe());
+  assert.ok(made[0].closed);
+  play("tap");
+  assert.equal(made.length, 2);
 });

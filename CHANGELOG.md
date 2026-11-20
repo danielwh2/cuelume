@@ -56,6 +56,10 @@ aims to follow [Semantic Versioning](https://semver.org/).
   `setEnabled(false)` finds nothing sounding; the next cue resumes it. A
   running context kept the audio device open at its smallest buffer, which
   made other apps' audio crackle in Safari and WebKit views.
+- Sound comes back after a screen lock or sleep in Safari without a reload.
+  A context the browser has closed is replaced by a fresh one on the next
+  cue, and so is one that reads `running` while its clock has stopped,
+  which each play now checks for three quarters of a second later.
 
 ## [0.2.5] - 2026-10-13
 
