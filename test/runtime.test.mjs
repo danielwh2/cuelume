@@ -1859,3 +1859,118 @@ test("the room is the same room at every sample rate", async () => {
     }
   }
 });
+
+// A window that keeps its listeners, so a test can fire the gestures audio waits for.
+function gestureWindow(AudioContext) {
+  const listeners = new Map();
+  return {
+    AudioContext,
+    listeners,
+    addEventListener(type, callback, options) {
+      listeners.set(type, { callback, options });
+    },
+    removeEventListener(type, callback, capture) {
+      if (listeners.get(type)?.callback === callback && capture === true) listeners.delete(type);
+    },
+    emit(type) {
+      listeners.get(type)?.callback();
+    },
+  };
+}
+
+test("a blocked play starts audio on the next gesture that counts, and a swipe isn't one", async (context) => {
+  context.after(restoreGlobals);
+  const userActivation = { hasBeenActive: false };
+  setGlobal("navigator", { userActivation });
+  const audio = wakingContext();
+  let constructions = 0;
+  class Counted extends audio.Waking {
+    constructor() {
+      super();
+      constructions++;
+    }
+  }
+  const win = gestureWindow(Counted);
+  setGlobal("window", win);
+  setGlobal("setTimeout", () => 0);
+  const { play } = await import(`../dist/audio/engine.js?armed=${Date.now()}`);
+
+  // before activation the cue is dropped and nothing is built, but audio waits for a gesture
+  play("tap");
+  play("tap");
+  assert.equal(constructions, 0);
+  assert.deepEqual([...win.listeners.keys()].sort(), ["click", "keydown", "mousedown", "touchend"]);
+  assert.ok([...win.listeners.values()].every(({ options }) => options.capture && options.passive));
+
+  // on iOS a swipe ends in touchend with no activation: keep waiting
+  win.emit("touchend");
+  assert.equal(constructions, 0);
+
+  // a tap on a control with no cue of its own creates the context on its call stack and resumes it
+  userActivation.hasBeenActive = true;
+  win.emit("click");
+  assert.equal(constructions, 1);
+  await audio.wake();
+  assert.equal(win.listeners.size, 0, "the listeners leave once audio runs");
+  assert.equal(audio.log.sources.length, 0, "the cue blocked before activation stays dropped");
+
+  // from here a swipe's cue renders directly
+  play("tap");
+  assert.ok(audio.log.sources.length > 0);
+});
+
+test("a cue left waiting off a gesture's stack plays when the next gesture starts audio, unless it is stale", async (context) => {
+  context.after(restoreGlobals);
+  let clock = 0;
+  setGlobal("performance", { now: () => clock });
+  setGlobal("setTimeout", () => 0);
+  for (const [later, heard] of [[500, true], [1500, false]]) {
+    const audio = wakingContext();
+    const win = gestureWindow(audio.Waking);
+    setGlobal("window", win);
+    const { play } = await import(`../dist/audio/engine.js?stale=${Math.random()}`);
+    // after an await, off the click's stack: WebKit leaves this resume pending for good
+    clock = 0;
+    play("success");
+    assert.equal(win.listeners.size, 4);
+    clock = later;
+    win.emit("keydown");
+    await audio.wake();
+    assert.equal(audio.log.sources.length > 0, heard, `${later} ms later`);
+    assert.equal(win.listeners.size, 0);
+  }
+});
+
+test("unlock builds the output, room and noise up front, and arms the next gesture when refused", async (context) => {
+  context.after(restoreGlobals);
+  const { Context } = recordingContext();
+  const built = { rooms: 0, buffers: 0 };
+  class Counted extends Context {
+    createConvolver() {
+      built.rooms++;
+      return super.createConvolver();
+    }
+    createBuffer(...args) {
+      built.buffers++;
+      return super.createBuffer(...args);
+    }
+  }
+  setGlobal("setTimeout", () => 0);
+  setGlobal("window", gestureWindow(Counted));
+  const { unlock, play } = await import(`../dist/audio/engine.js?warm=${Date.now()}`);
+  assert.equal(await unlock(), true);
+  assert.equal(built.rooms, 1);
+  const buffers = built.buffers;
+  assert.ok(buffers >= 2, "room impulse and noise");
+  play("type"); // noise and room are already there
+  assert.deepEqual(built, { rooms: 1, buffers });
+
+  // before activation unlock resolves false, builds nothing, and leaves audio to the next gesture
+  const userActivation = { hasBeenActive: false };
+  setGlobal("navigator", { userActivation });
+  const win = gestureWindow(Counted);
+  setGlobal("window", win);
+  const blocked = await import(`../dist/audio/engine.js?warmBlocked=${Date.now()}`);
+  assert.equal(await blocked.unlock(), false);
+  assert.equal(win.listeners.size, 4);
+});

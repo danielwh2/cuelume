@@ -17,7 +17,7 @@ import {
   type KeyRole,
 } from "../sounds/context.js";
 import { THEMES, isThemeName, type ThemeName } from "../sounds/themes.js";
-import { createOutput, silence, type OutputBus } from "./output.js";
+import { createOutput, getNoise, silence, type OutputBus } from "./output.js";
 import { renderRecipe, type Part, type Played, type Voices } from "./render.js";
 
 export type { Part } from "./render.js";
@@ -29,7 +29,7 @@ let sharedContext: AudioContext | null = null;
 let sharedBus: OutputBus | null = null;
 const voices: Voices = new Map();
 /** The latest play waiting for the context to start; earlier ones would all start at once and add up. */
-let waiting: { played: Played; part: Part; render: (part: Part) => void } | null = null;
+let waiting: { played: Played; part: Part; askedAt: number; render: (part: Part) => void } | null = null;
 let enabled = true;
 let globalVolume = 1;
 let activeTheme: ThemeName = "default";
@@ -49,6 +49,7 @@ export function setEnabled(value: boolean): void {
   if (typeof value !== "boolean") return;
   enabled = value;
   if (value) return;
+  disarm();
   held.clear();
   voices.clear();
   waiting = null;
@@ -73,6 +74,72 @@ function isBlocked(): boolean {
   return typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive === false;
 }
 
+const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
+/** The events browsers count as activation; audio can start on their call stack. */
+const GESTURES = ["touchend", "click", "keydown", "mousedown"] as const;
+/**
+ * A cue still waiting on the context this long after it was asked for is dropped: it belongs to
+ * the moment that asked for it, not to a later tap that finally starts audio.
+ */
+const STALE_CUE_MS = 1000;
+let armed = false;
+
+/**
+ * Starts audio on the next gesture that counts. A play the browser blocks, before the page's first
+ * activation (on iOS a swipe grants none) or off a gesture's call stack (after an await, where
+ * resume() stays pending), would otherwise leave every later play silent too. Capture listeners on
+ * window, so an element that stops propagation can't starve them; passive, so scrolling is untouched.
+ */
+function arm(): void {
+  if (armed || typeof window === "undefined") return;
+  if (typeof window.addEventListener !== "function" || typeof window.removeEventListener !== "function") return;
+  armed = true;
+  for (const type of GESTURES) window.addEventListener(type, onGesture, { capture: true, passive: true });
+}
+
+function disarm(): void {
+  if (!armed) return;
+  armed = false;
+  for (const type of GESTURES) window.removeEventListener(type, onGesture, true);
+}
+
+function onGesture(): void {
+  // a swipe's touchend grants no activation: keep waiting
+  if (!enabled || isBlocked()) return;
+  const context = getAudioContext();
+  if (!context) disarm();
+  else if (context.state === "running") {
+    disarm();
+    flush(context);
+  } else void wake(context);
+}
+
+/** Plays the cue waiting on the context, if it is still fresh. */
+function flush(context: AudioContext): void {
+  const next = waiting;
+  waiting = null;
+  if (next && enabled && context.state === "running" && now() - next.askedAt <= STALE_CUE_MS) next.render(next.part);
+}
+
+/** Resumes `context` without surfacing a refusal; resolves whether it runs. */
+function wake(context: AudioContext): Promise<boolean> {
+  try {
+    return context.resume().then(
+      () => {
+        if (context.state !== "running") return false;
+        disarm();
+        flush(context);
+        return true;
+      },
+      () => false,
+    );
+  } catch {
+    // Some browsers throw synchronously when audio is blocked.
+    return Promise.resolve(false);
+  }
+}
+
 /**
  * Starts audio now rather than on the first cue. Call it from a user gesture,
  * such as the click that turns sound on: some browsers only start audio
@@ -81,18 +148,23 @@ function isBlocked(): boolean {
  * Web Audio. Never rejects.
  */
 export function unlock(): Promise<boolean> {
-  const context = isBlocked() ? null : getAudioContext();
-  if (!context) return Promise.resolve(false);
-  if (context.state === "running") return Promise.resolve(true);
-  try {
-    return context.resume().then(
-      () => context.state === "running",
-      () => false,
-    );
-  } catch {
-    // Some browsers throw synchronously when audio is blocked.
+  if (isBlocked()) {
+    arm();
     return Promise.resolve(false);
   }
+  const context = getAudioContext();
+  if (!context) return Promise.resolve(false);
+  try {
+    // build the output, room and noise now, so the first cue doesn't pay for them
+    getNoise(context, (sharedBus ??= createOutput(context)));
+  } catch {
+    // A cue builds them itself if this fails.
+  }
+  if (context.state === "running") return Promise.resolve(true);
+  return wake(context).then((running) => {
+    if (!running) arm();
+    return running;
+  });
 }
 
 function getAudioContext(): AudioContext | null {
@@ -187,7 +259,11 @@ export function release(sound: SoundName = "tap"): void {
 export function playInContext(sound: unknown, options: PlayOptions | undefined, interaction: Context, part: Part = "both", gesture?: string): void {
   const name = resolveSound(sound);
   if (!enabled || !name) return;
-  if (isBlocked()) return;
+  // blocked: this cue is dropped, but audio starts on the next gesture that counts
+  if (isBlocked()) {
+    arm();
+    return;
+  }
 
   const holding = gesture ? `${name}:${gesture}` : name;
   let played: Played;
@@ -221,19 +297,10 @@ export function playInContext(sound: unknown, options: PlayOptions | undefined, 
     // the context starts: each waiting play would otherwise start at the same instant and add up.
     // A release joins its own waiting press into the whole cue; it never replaces another cue.
     if (part !== "release" || !waiting)
-      waiting = { played, part, render: (as) => renderRecipe(context, getBus, voices, name, played, as) };
+      waiting = { played, part, askedAt: now(), render: (as) => renderRecipe(context, getBus, voices, name, played, as) };
     else if (waiting.played === played && waiting.part === "press") waiting.part = "both";
-    try {
-      void context.resume().then(
-        () => {
-          const next = waiting;
-          waiting = null;
-          if (next && enabled && context.state === "running") next.render(next.part);
-        },
-        () => {},
-      );
-    } catch {
-      // Some browsers throw synchronously when audio is blocked.
-    }
+    void wake(context);
+    // off a gesture's call stack resume() can stay pending: the next gesture that counts starts it
+    arm();
   }
 }

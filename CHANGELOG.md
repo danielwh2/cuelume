@@ -10,7 +10,8 @@ aims to follow [Semantic Versioning](https://semver.org/).
 
 - `unlock()`: start audio from a user gesture, such as the click that turns
   sound on, instead of on the first cue. Resolves `true` once cues can sound
-  and `false` while the browser still blocks audio.
+  and `false` while the browser still blocks audio. It also builds the output,
+  room and noise up front, so the first cue doesn't pay for them.
 - `bind()` returns a function that unbinds, for a component that unmounts or
   a module that hot reloads. A root stays bound until every caller that bound
   it has called theirs.
@@ -40,6 +41,11 @@ aims to follow [Semantic Versioning](https://semver.org/).
   Each play still asks the context to resume from its own gesture; only the
   latest one sounds, and a press and its release made while it wakes play
   as the whole cue. `setEnabled(false)` also drops a cue that is waiting.
+- A visit that starts with swipes on iOS, or whose first cue plays after an
+  `await`, no longer stays silent until a tap happens to carry a cue. A cue
+  the browser blocks is dropped, and audio starts on the next tap, click or
+  key press, even one on a control with no cue. A cue left waiting on the
+  context plays then only if it was asked for within the last second.
 
 ## [0.2.5] - 2026-10-13
 

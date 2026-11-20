@@ -260,7 +260,9 @@ soundToggle.addEventListener("click", async () => {
 });
 ```
 
-`unlock()` cannot start audio the browser refuses; the [autoplay rules](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay) still apply. Called before any interaction it resolves `false` and builds nothing.
+`unlock()` also builds the output and room, so the first cue doesn't pay for that setup. It cannot start audio the browser refuses; the [autoplay rules](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay) still apply. Called before any interaction it resolves `false` and builds nothing.
+
+When the browser blocks a cue (before the first interaction, after a swipe on iOS, or after an `await`), that cue is dropped and Cuelume starts audio on the next tap, click or key press instead, so later cues sound.
 
 Cuelume does not follow `prefers-reduced-motion`. That setting is about motion. Someone who turns off animation may still want sound, and someone who wants silence may never touch it.
 
@@ -285,7 +287,7 @@ import { play, press, release, bind, unlock, setEnabled, setVolume, setTheme, so
   key.addEventListener("pointerup", () => release("tap"));
   ```
 - **`bind(root?: ParentNode): () => void`**: delegate all `data-cuelume-*` interactions under `root` (defaults to the whole document). Idempotent, and handles elements added later. Returns a function that unbinds; a root stays bound until every caller that bound it has called theirs.
-- **`unlock(): Promise<boolean>`**: start audio now, from a user gesture, instead of on the first cue. Resolves `true` once cues can sound, `false` while the browser blocks audio or has no Web Audio. Never rejects.
+- **`unlock(): Promise<boolean>`**: start audio now, from a user gesture, instead of on the first cue, and build the output graph so the first cue plays without delay. Resolves `true` once cues can sound, `false` while the browser blocks audio or has no Web Audio. Never rejects.
 - **`setEnabled(enabled: boolean)`**: turn sound on or off. Off is immediate: cues already ringing fade within a few milliseconds. Does not persist the preference.
 - **`setVolume(volume: number)`**: set the global volume for future playback, clamped to `0–1`. Non-finite values are ignored and preferences are not persisted.
 - **`setTheme(theme: ThemeName)`**: switch the material of future playback. Unknown names are ignored; the choice isn't persisted.
