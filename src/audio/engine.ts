@@ -147,8 +147,9 @@ function suspend(context: AudioContext): void {
   clearTimeout(idleTimer);
   if (suspending || sounding > 0 || context.state !== "running" || typeof context.suspend !== "function") return;
   suspending = true;
+  suspends++;
   const settled = () => {
-    suspending = false;
+    if (context === sharedContext) suspending = false;
   };
   try {
     context.suspend().then(settled, settled);
@@ -157,11 +158,56 @@ function suspend(context: AudioContext): void {
   }
 }
 
+/**
+ * After a screen lock or sleep, Safari can leave the context closed, or reading "running" with its
+ * clock stopped and nothing reaching the speakers. Neither plays again; only a fresh context brings
+ * sound back without a reload. So a play checks, this long after, that the clock has moved.
+ */
+const CLOCK_PROBE_MS = 750;
+/** Less audio time than this over the probe, while running throughout, and the clock has stopped. */
+const STOPPED_CLOCK_S = 0.1;
+let probe: ReturnType<typeof setTimeout> | undefined;
+/** Counts suspends, so a probe can tell its context ran throughout. */
+let suspends = 0;
+
+function watchClock(context: AudioContext): void {
+  if (probe !== undefined) return;
+  const from = context.currentTime;
+  const epoch = suspends;
+  probe = setTimeout(() => {
+    probe = undefined;
+    if (context !== sharedContext || epoch !== suspends || !ready(context)) return;
+    if (context.currentTime - from < STOPPED_CLOCK_S) forget(context);
+  }, CLOCK_PROBE_MS);
+}
+
+/** Drops a dead context and everything built on it; the next play or gesture creates a fresh one. */
+function forget(context: AudioContext): void {
+  if (context !== sharedContext) return;
+  sharedContext = null;
+  sharedBus = null;
+  voices.clear();
+  waiting = null;
+  sounding = 0;
+  suspending = false;
+  clearTimeout(idleTimer);
+  clearTimeout(probe);
+  probe = undefined;
+  if (context.state === "closed" || typeof context.close !== "function") return;
+  try {
+    context.close().catch(() => {});
+  } catch {
+    // Already unusable; nothing more to let go.
+  }
+}
+
 /** Renders a play and keeps the context running until it has been let go. */
 function render(context: AudioContext, getBus: () => OutputBus, name: SoundName, played: Played, part: Part): void {
   const ended = () => {
-    if (--sounding === 0) idleSoon(context);
+    // a play still ending on a forgotten context doesn't count against the fresh one
+    if (context === sharedContext && --sounding === 0) idleSoon(context);
   };
+  watchClock(context);
   if (!renderRecipe(context, getBus, voices, name, played, part, ended)) return;
   clearTimeout(idleTimer);
   sounding++;
@@ -221,6 +267,7 @@ export function unlock(): Promise<boolean> {
 }
 
 function getAudioContext(): AudioContext | null {
+  if (sharedContext?.state === "closed") forget(sharedContext);
   if (sharedContext) return sharedContext;
   if (typeof window === "undefined") return null;
   const Ctor =
