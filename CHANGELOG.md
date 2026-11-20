@@ -6,32 +6,12 @@ aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- `unlock()`: start audio from a user gesture, such as the click that turns
-  sound on, instead of on the first cue. Resolves `true` once cues can sound
-  and `false` while the browser still blocks audio. It also builds the output,
-  room and noise up front, so the first cue doesn't pay for them.
-- `bind()` returns a function that unbinds, for a component that unmounts or
-  a module that hot reloads. A root stays bound until every caller that bound
-  it has called theirs.
+## [0.2.9] - 2026-11-20
 
 ### Changed
 
-- `setEnabled(false)` is heard at once: cues already ringing fade within a
-  few milliseconds, where they used to play out.
-- The output limiter is gone. No single cue ever reached it, and it held
-  every cue back by 6 ms. The 3.2 dB it added is folded into the output, so
-  cues are as loud as before, and a soft clip with no delay catches cues
-  that stack.
-- The room and the noise are the same on every page load and at every
-  sample rate. They used to be drawn at random per page, which moved a
-  ringing cue such as `ready` by a few dB from one load to the next and
-  could lean it left or right.
-- A layer's `decay` is now its ring time: the seconds it takes to fall
-  60 dB. It used to be the time to reach a fixed floor, so a quiet layer
-  rang up to three times longer than a loud one with the same number. Every
-  recipe was converted to ring as it did; no cue moves by more than 0.3 dB.
+- `unlock()` also builds the output, room and noise up front, so the first
+  cue doesn't pay for them.
 
 ### Fixed
 
@@ -64,6 +44,44 @@ aims to follow [Semantic Versioning](https://semver.org/).
   a single-page app. Browsers re-send `pointerenter` when a route swaps the
   page under a still cursor; hover now waits after a mouse press, Enter,
   Space or scroll until the mouse has moved more than 4 px.
+
+## [0.2.8] - 2026-10-13
+
+### Changed
+
+- A layer's `decay` is now its ring time: the seconds it takes to fall
+  60 dB. It used to be the time to reach a fixed floor, so a quiet layer
+  rang up to three times longer than a loud one with the same number. Every
+  recipe was converted to ring as it did; no cue moves by more than 0.3 dB.
+
+## [0.2.7] - 2026-10-13
+
+### Changed
+
+- The output limiter is gone. No single cue ever reached it, and it held
+  every cue back by 6 ms. The 3.2 dB it added is folded into the output, so
+  cues are as loud as before, and a soft clip with no delay catches cues
+  that stack.
+- The room and the noise are the same on every page load and at every
+  sample rate. They used to be drawn at random per page, which moved a
+  ringing cue such as `ready` by a few dB from one load to the next and
+  could lean it left or right.
+
+## [0.2.6] - 2026-10-13
+
+### Added
+
+- `unlock()`: start audio from a user gesture, such as the click that turns
+  sound on, instead of on the first cue. Resolves `true` once cues can sound
+  and `false` while the browser still blocks audio.
+- `bind()` returns a function that unbinds, for a component that unmounts or
+  a module that hot reloads. A root stays bound until every caller that bound
+  it has called theirs.
+
+### Changed
+
+- `setEnabled(false)` is heard at once: cues already ringing fade within a
+  few milliseconds, where they used to play out.
 
 ## [0.2.5] - 2026-10-13
 
@@ -108,6 +126,10 @@ aims to follow [Semantic Versioning](https://semver.org/).
 - `press` theme, struck-bar tones, and a shared room send on every cue.
   Each cue is one sound rather than a stack of effects.
 
-[Unreleased]: https://github.com/danielwh2/cuelume/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/danielwh2/cuelume/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/danielwh2/cuelume/compare/v0.2.8...v0.2.9
+[0.2.8]: https://github.com/danielwh2/cuelume/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/danielwh2/cuelume/compare/v0.2.6...v0.2.7
+[0.2.6]: https://github.com/danielwh2/cuelume/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/danielwh2/cuelume/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/danielwh2/cuelume/releases/tag/v0.2.4
