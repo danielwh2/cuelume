@@ -40,6 +40,11 @@ aims to follow [Semantic Versioning](https://semver.org/).
   Each play still asks the context to resume from its own gesture; only the
   latest one sounds, and a press and its release made while it wakes play
   as the whole cue. `setEnabled(false)` also drops a cue that is waiting.
+- A short cue such as `tap` in the press theme is no longer silent on a
+  fresh page in Chrome. Every play starts 10 ms ahead of the audio clock,
+  and its nodes are let go when its sources have actually ended rather than
+  on a wall-clock timer, which could disconnect a cue before a cold
+  renderer had played it.
 
 ## [0.2.5] - 2026-10-13
 

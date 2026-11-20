@@ -16,6 +16,9 @@ function restoreGlobals() {
   originals.clear();
 }
 
+// every play starts this far ahead of the context clock
+const { PLAYBACK_LEAD: LEAD } = await import("../dist/audio/render.js");
+
 const audioParam = () => ({
   value: 0,
   ramps: [],
@@ -384,7 +387,7 @@ test("count follows its duration and falls going back, in every theme and emphas
     layers.forEach((layer, i) => {
       const offset = layer.offset ?? 0;
       const [s, l] = [short.sources[i], long.sources[i]];
-      assert.ok(near(s.at, (offset * 300) / 800) && near(l.at, (offset * 2000) / 800), `${theme} layer ${i} starts in step`);
+      assert.ok(near(s.at, LEAD + (offset * 300) / 800) && near(l.at, LEAD + (offset * 2000) / 800), `${theme} layer ${i} starts in step`);
       // a stretch layer's sound and glide both last in proportion; everything else keeps its length
       const scale = layer.stretch ? 2000 / 300 : 1;
       assert.ok(near(l.end - l.at - 0.05, (s.end - s.at - 0.05) * scale), `${theme} layer ${i} length`);
@@ -631,8 +634,8 @@ test("a press lets go: play() releases 90 ms later, a binding splits the two, an
   clock += 5_000;
   const both = sourcesOf(() => play("tap"));
   assert.equal(both.length, pressed + released);
-  assert.ok(both.slice(0, pressed).every((source) => source.at === 0));
-  assert.ok(both.slice(pressed).every((source) => near(source.at, 0.09)));
+  assert.ok(both.slice(0, pressed).every((source) => near(source.at, LEAD)));
+  assert.ok(both.slice(pressed).every((source) => near(source.at, LEAD + 0.09)));
 
   // a binding: the press alone, then its release the moment the gesture lifts; a second lift finds nothing
   clock += 5_000;
@@ -641,7 +644,7 @@ test("a press lets go: play() releases 90 ms later, a binding splits the two, an
   const press = master();
   const lift = sourcesOf(() => playInContext("tap", undefined, {}, "release"));
   assert.equal(lift.length, released);
-  assert.ok(lift.every((source) => source.at === 0));
+  assert.ok(lift.every((source) => near(source.at, LEAD)));
   assert.equal(press.gain.ramps.length, 0, "a release rings with its press, it doesn't replace it");
   assert.equal(sourcesOf(() => playInContext("tap", undefined, {}, "release")).length, 0);
 
@@ -755,7 +758,7 @@ test("one strike per play: every layer shares it, harder is louder and brighter,
   const SIXTY_DB_DOWN = 1e-3;
   for (const { layer, gain } of struck("default", "success")) {
     assert.equal(gain.target, 0, "a layer dies away to silence");
-    assert.ok(near(gain.fallAt, layer.attack), "it starts to fall as its attack ends");
+    assert.ok(near(gain.fallAt, LEAD + layer.attack), "it starts to fall as its attack ends");
     assert.ok(near(Math.exp(-layer.decay / gain.fall), SIXTY_DB_DOWN), "and is 60 dB down one decay later");
   }
 });
@@ -1818,10 +1821,11 @@ test("every play rings into one shared room, and a finished play lets go of it",
   }
   assert.notDeepEqual(impulse[0], impulse[1]);
 
-  // one cleanup, when the last layer has finished; the room itself stays up for the next play
+  // one cleanup, once every source has ended, with a fallback timer for a context that never ends them;
+  // the room itself stays up for the next play
   assert.equal(timers.length, 1);
   const longest = Math.max(...RECIPES.success.layers.filter((l) => l.from !== "strong").map((l) => l.attack + l.decay));
-  assert.equal(Math.round(timers[0].delay), Math.round((longest + 0.1) * 1000));
+  assert.equal(Math.round(timers[0].delay), Math.round((LEAD + longest + 0.05 + 1) * 1000));
   timers[0].callback();
   assert.deepEqual(disconnected, ["master", "send"]);
 
@@ -1858,4 +1862,47 @@ test("the room is the same room at every sample rate", async () => {
       assert.ok(Math.abs(off) < 0.25, `${hertz} Hz returns ${off.toFixed(2)} dB off at ${rate} Hz`);
     }
   }
+});
+
+test("a play starts just ahead of the clock and is let go when its sources end, not before", async (context) => {
+  context.after(restoreGlobals);
+  const { Context, log } = recordingContext();
+  const masters = [];
+  class Recording extends Context {
+    currentTime = 3;
+    createGain() {
+      const gain = super.createGain();
+      let connected = true;
+      gain.disconnect = () => {
+        connected = false;
+      };
+      masters.push({ gain, connected: () => connected });
+      return gain;
+    }
+  }
+  const timers = [];
+  setGlobal("setTimeout", (callback, delay) => {
+    timers.push({ callback, delay });
+    return 0;
+  });
+  setGlobal("window", { AudioContext: Recording });
+  const { play } = await import(`../dist/audio/engine.js?ended=${Date.now()}`);
+  play("success"); // builds the shared output first
+  const [before, gains] = [log.sources.length, masters.length];
+  play("tap");
+  const sources = log.sources.slice(before);
+  const [master, send] = masters.slice(gains);
+  assert.ok(sources.length > 1);
+  // no source is scheduled for a moment a cold renderer may already have passed
+  assert.ok(sources.every((source) => source.at >= 3 + LEAD - 1e-9));
+
+  // a renderer that started late still has the graph connected until the last source really ends
+  for (const source of sources.slice(1)) source.onended();
+  assert.ok(master.connected() && send.connected());
+  sources[0].onended();
+  assert.ok(!master.connected() && !send.connected());
+
+  // the fallback timer, for a context that never ends its sources, finds nothing left to do
+  master.gain.disconnect = send.gain.disconnect = () => assert.fail("let go twice");
+  timers.at(-1).callback();
 });
